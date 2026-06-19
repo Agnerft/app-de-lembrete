@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Mega App - Administracao</title>
+  <link rel="icon" href="/static/assets/favicon.ico" sizes="any">
+  <link rel="stylesheet" href="/static/admin.css?v=3">
+</head>
+<body>
+  <main class="admin-shell">
+    <header>
+      <p class="eyebrow">Mega App / Administracao</p>
+      <h1>Administracao</h1>
+      <p class="intro">Gerencie os contatos de suporte e acompanhe as consultas dos revendedores.</p>
+    </header>
+
+    <section class="card" aria-labelledby="accessTitle">
+      <h2 id="accessTitle">Acesso administrativo</h2>
+      <label for="adminToken">Token administrativo</label>
+      <div class="token-row">
+        <input id="adminToken" type="password" autocomplete="off" spellcheck="false" placeholder="REMINDER_ADMIN_TOKEN">
+        <button id="connectButton" class="secondary" type="button">Conectar</button>
+      </div>
+      <p class="hint">O token permanece somente na memoria desta aba.</p>
+    </section>
+
+    <nav class="admin-tabs" id="adminTabs" aria-label="Areas administrativas" hidden>
+      <button class="tab-button active" type="button" data-panel="contactsPanel">Contatos das revendas</button>
+      <button class="tab-button" type="button" data-panel="auditPanel">Auditoria</button>
+    </nav>
+
+    <section class="card admin-panel" id="contactsPanel" aria-labelledby="contactsTitle" hidden>
+      <div class="section-head">
+        <div>
+          <h2 id="contactsTitle">Contatos das revendas</h2>
+          <p>O número oficial atende clientes de revendas que ainda não possuem contato próprio.</p>
+        </div>
+        <button id="syncResellers" class="secondary compact" type="button">Atualizar lista</button>
+      </div>
+
+      <form id="officialForm" class="official-form">
+        <label for="officialWhatsapp">WhatsApp oficial (padrao)</label>
+        <div class="contact-row">
+          <input id="officialWhatsapp" type="tel" inputmode="tel" autocomplete="tel" placeholder="Ex.: 69 99999-9999">
+          <button class="primary" type="submit">Salvar oficial</button>
+        </div>
+      </form>
+
+      <div class="reseller-toolbar">
+        <label class="search-label" for="resellerSearch">Buscar revenda</label>
+        <input id="resellerSearch" type="search" placeholder="Nome ou usuario da revenda">
+        <span id="resellerCount" class="count-label"></span>
+      </div>
+      <p id="contactsStatus" class="status" role="status"></p>
+      <div id="resellerList" class="reseller-list">
+        <p class="empty">Carregando revendas...</p>
+      </div>
+    </section>
+
+    <section class="card admin-panel" id="auditPanel" aria-labelledby="auditTitle" hidden>
+      <div class="section-head">
+        <div>
+          <h2 id="auditTitle">Monitor de consultas</h2>
+          <p id="auditDescription">A auditoria esta desativada.</p>
+        </div>
+        <span id="auditState" class="summary off">Desativada</span>
+      </div>
+      <div class="actions">
+        <button id="toggleAudit" class="primary" type="button">Ativar por 30 min</button>
+        <button id="refreshEvents" class="secondary" type="button">Atualizar</button>
+        <button id="clearEvents" class="ghost" type="button">Limpar eventos</button>
+      </div>
+      <p id="statusMessage" class="status" role="status"></p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Horario</th><th>Login</th><th>Revendedor</th><th>Origem</th></tr></thead>
+          <tbody id="eventList"><tr><td colspan="4" class="empty">Nenhuma consulta registrada.</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+  <script src="/static/admin.js?v=3" defer></script>
+</body>
+</html>

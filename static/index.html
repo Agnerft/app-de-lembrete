@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#07101f">
+  <title>Mega App - Consulta de acesso</title>
+  <link rel="icon" href="/static/assets/favicon.ico" sizes="any">
+  <link rel="icon" href="/static/assets/site-icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/static/assets/site-icon-192.png">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="stylesheet" href="/static/styles.css?v=48">
+</head>
+<body>
+  <div class="stage">
+    <header class="app-header">
+      <a class="brand" href="/" aria-label="Mega App">
+        <img class="brand-lockup" src="/static/assets/mega-app-lockup-dark.png" alt="Mega App">
+      </a>
+      <button class="install-button" id="installButton" type="button">
+        <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>
+        Instalar
+      </button>
+    </header>
+
+    <main class="page">
+      <section class="hero-copy" aria-label="Mega App">
+        <div class="brand-orbit" aria-hidden="true">
+          <span></span>
+          <span></span>
+          <span></span>
+        </div>
+        <img class="hero-lockup" src="/static/assets/mega-app-lockup-dark.png" alt="Mega App">
+        <h1>Consulta de acesso</h1>
+        <p>Digite o telefone cadastrado para recuperar login, senha, vencimento e link de pagamento.</p>
+      </section>
+
+      <section class="glass-panel search-panel" aria-labelledby="loginTitle">
+        <h2 id="loginTitle">Digite seu telefone com DDD</h2>
+        <form id="clientForm" class="form">
+          <label for="telefone">Telefone com DDD</label>
+          <div class="field">
+            <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.8 19.8 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.12 4.18 2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.12.9.32 1.77.59 2.61a2 2 0 0 1-.45 2.11L8 9.69a16 16 0 0 0 6.31 6.31l1.25-1.25a2 2 0 0 1 2.11-.45c.84.27 1.71.47 2.61.59A2 2 0 0 1 22 16.92Z"/></svg>
+            <input id="telefone" name="telefone" inputmode="tel" autocomplete="tel" placeholder="Ex: 69 9310-4620" required>
+          </div>
+
+          <button class="primary-button" id="submitButton" type="submit">
+            <span class="button-label">Pesquisar</span>
+            <svg class="button-arrow" aria-hidden="true" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="m13 6 6 6-6 6"/></svg>
+          </button>
+          <p class="message" id="message" role="status"></p>
+          <a class="search-support-button" id="searchSupportLink" href="#" target="_blank" rel="noopener noreferrer" hidden>
+            Falar com o suporte
+          </a>
+        </form>
+      </section>
+
+      <section class="community-panel" aria-label="Comunidade Mega App">
+        <div class="community-people">
+          <div class="community-avatars" aria-hidden="true">
+            <span><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3"/><path d="M5.5 19a6.5 6.5 0 0 1 13 0"/></svg></span>
+            <span><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3"/><path d="M5.5 19a6.5 6.5 0 0 1 13 0"/></svg></span>
+            <span><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3"/><path d="M5.5 19a6.5 6.5 0 0 1 13 0"/></svg></span>
+          </div>
+          <p><strong id="communityUsers">-</strong> <span id="communityUsersLabel">pessoas já usam o Mega App</span></p>
+        </div>
+        <div class="community-actions">
+          <button class="like-button" id="likeButton" type="button" aria-pressed="false">
+            <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.6l-1-1a5.5 5.5 0 0 0-7.8 7.8l1 1L12 21l7.8-7.6 1-1a5.5 5.5 0 0 0 0-7.8Z"/></svg>
+            <span>Curtir</span>
+          </button>
+          <p><strong id="communityLikes">-</strong> <span id="communityLikesLabel">curtidas</span></p>
+        </div>
+        <p class="community-status sr-only" id="communityStatus" role="status" aria-live="polite"></p>
+      </section>
+
+      <section class="glass-panel result-panel" id="resultPanel" aria-labelledby="resultTitle" hidden>
+        <div class="result-head">
+          <h2 id="resultTitle">Seu acesso</h2>
+          <span class="status-pill" id="dueStatus">-</span>
+        </div>
+        <p class="sr-only" id="copyStatus" role="status" aria-live="polite"></p>
+
+        <dl class="result-list result-list-primary">
+          <div class="result-row result-row-important">
+            <dt>
+              <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M8 2v4"/><path d="M16 2v4"/><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M3 10h18"/></svg>
+              <span>Vencimento</span>
+            </dt>
+            <dd><span id="dueDate">-</span></dd>
+          </div>
+          <div class="result-row result-row-feature">
+            <dt>
+              <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+              <span>Login</span>
+            </dt>
+            <dd>
+              <span id="clientLogin">-</span>
+              <button class="copy-button" type="button" data-copy-target="clientLogin" data-copy-label="Login" data-copy-feedback="Login copiado" aria-label="Copiar login">
+                <svg aria-hidden="true" viewBox="0 0 24 24"><rect x="9" y="9" width="10" height="10" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v1"/></svg>
+              </button>
+            </dd>
+          </div>
+          <div class="result-row result-row-feature">
+            <dt>
+              <svg aria-hidden="true" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="10" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+              <span>Senha</span>
+            </dt>
+            <dd>
+              <span class="password-value" id="clientPassword" aria-label="Senha oculta">••••••••</span>
+              <button class="copy-button visibility-button" id="togglePassword" type="button" aria-label="Mostrar senha" aria-pressed="false">
+                <svg class="eye-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
+                <svg class="eye-off-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="m3 3 18 18"/><path d="M10.6 10.6A3 3 0 0 0 12 15a3 3 0 0 0 2.4-4.8"/><path d="M9.9 4.24A10.7 10.7 0 0 1 12 4c6.5 0 10 8 10 8a18.5 18.5 0 0 1-4 5.19"/><path d="M6.61 6.61A18.4 18.4 0 0 0 2 12s3.5 8 10 8c1.32 0 2.55-.31 3.67-.81"/></svg>
+              </button>
+              <button class="copy-button" type="button" data-copy-secret="password" data-copy-label="Senha" data-copy-feedback="Senha copiada" aria-label="Copiar senha">
+                <svg aria-hidden="true" viewBox="0 0 24 24"><rect x="9" y="9" width="10" height="10" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v1"/></svg>
+              </button>
+            </dd>
+          </div>
+        </dl>
+
+        <div class="payment-row">
+          <span class="payment-label">
+            <svg aria-hidden="true" viewBox="0 0 24 24"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20"/></svg>
+            Pagamento
+          </span>
+          <div class="payment-actions">
+            <a class="payment-button" id="paymentLink" href="#" target="_blank" rel="noopener noreferrer">
+              Abrir pagamento
+              <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M7 17 17 7"/><path d="M9 7h8v8"/><path d="M19 17v2H5V5h2"/></svg>
+            </a>
+            <button class="copy-payment-button" id="copyPaymentLink" type="button" data-default-label="Copiar Pix">
+              <span>Copiar Pix</span>
+              <svg aria-hidden="true" viewBox="0 0 24 24"><rect x="9" y="9" width="10" height="10" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v1"/></svg>
+            </button>
+          </div>
+          <span class="no-link" id="noLink" hidden>Link não encontrado</span>
+        </div>
+
+        <div class="reminder-section">
+          <fieldset class="reminder-preferences">
+            <legend>Quando você quer ser lembrado?</legend>
+            <div class="reminder-options">
+              <label class="reminder-option"><input type="checkbox" name="reminderDay" value="3" checked><span>3 dias antes</span></label>
+              <label class="reminder-option"><input type="checkbox" name="reminderDay" value="2" checked><span>2 dias antes</span></label>
+              <label class="reminder-option"><input type="checkbox" name="reminderDay" value="1" checked><span>1 dia antes</span></label>
+              <label class="reminder-option"><input type="checkbox" name="reminderDay" value="0" checked><span>No dia</span></label>
+            </div>
+          </fieldset>
+          <button class="reminder-button" id="reminderButton" type="button">
+            <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M18 8a6 6 0 1 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+            Ativar lembretes
+          </button>
+        </div>
+
+        <dl class="result-list result-list-secondary" aria-label="Informações do plano">
+          <div class="result-row">
+            <dt>
+              <svg aria-hidden="true" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/></svg>
+              <span>Telas</span>
+            </dt>
+            <dd><span id="screens">-</span></dd>
+          </div>
+          <div class="result-row">
+            <dt>
+              <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M20 12v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-8"/><path d="M2 7h20v5H2z"/><path d="M12 22V7"/><path d="M12 7H7.5a2.5 2.5 0 1 1 0-5C11 2 12 7 12 7Z"/><path d="M12 7h4.5a2.5 2.5 0 1 0 0-5C13 2 12 7 12 7Z"/></svg>
+              <span>Plano</span>
+            </dt>
+            <dd id="plan">-</dd>
+          </div>
+        </dl>
+
+        <div class="app-preference">
+          <div class="app-preference-head">
+            <div>
+              <span class="app-preference-kicker">Aplicativos por tela</span>
+              <h3>Qual app você usa?</h3>
+            </div>
+            <span class="screens-summary" id="screensSummary"></span>
+          </div>
+          <div class="app-slots" id="appSlots"></div>
+          <p class="app-tip" id="appTip">Você pode escolher um aplicativo diferente para cada tela.</p>
+        </div>
+
+        <a class="support-button" id="supportLink" href="#" target="_blank" rel="noopener noreferrer" hidden>
+          <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M21 11.5a8.38 8.38 0 0 1-1.9 5.35 8.5 8.5 0 0 1-6.6 3.15 8.38 8.38 0 0 1-4.15-1.09L3 20l1.13-5.18A8.5 8.5 0 1 1 21 11.5Z"/><path d="M8.5 9.5c.3 2.2 1.8 4 4 5l1.5-1.1 2.1.5"/></svg>
+          <span>Falar com suporte</span>
+        </a>
+
+      </section>
+    </main>
+  </div>
+
+  <dialog class="install-dialog" id="installDialog">
+    <form method="dialog">
+      <div class="dialog-head">
+        <h2>Instalar Mega App</h2>
+        <button class="dialog-close" value="close" aria-label="Fechar">
+          <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+        </button>
+      </div>
+      <div class="install-steps" id="installSteps"></div>
+      <button class="primary-button dialog-action" value="close">Entendi</button>
+    </form>
+  </dialog>
+
+  <script src="/static/app.js?v=48"></script>
+</body>
+</html>
