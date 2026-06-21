@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from datetime import datetime, timedelta
@@ -261,6 +262,37 @@ class PaymentMatchTests(unittest.TestCase):
             result = app.search_payment_data("55 51 9880-1444")
 
         self.assertEqual(result, matching)
+
+    def test_line_without_payment_is_returned(self):
+        line = {
+            "id": 123,
+            "user_username": "revenda1",
+            "username": "cliente1",
+            "password": "senha1",
+            "phone": "+5527999999999",
+            "is_enabled": True,
+            "status": "active",
+        }
+        with (
+            patch.object(app, "enforce_rate_limit"),
+            patch.object(app, "search_payment_data", return_value=None),
+            patch.object(app, "search_line_data", return_value=line),
+            patch.object(app, "support_contact_for_reseller", return_value=None),
+            patch.object(app, "get_app_preference", return_value=None),
+            patch.object(app, "get_reminder_days_for_client", return_value=[3, 2, 1, 0]),
+            patch.object(app, "save_notification_client"),
+            patch.object(app, "record_admin_audit_event"),
+            patch.object(app, "ACCESS_TOKEN_SECRET", "test-secret"),
+        ):
+            response = app.consultar_cliente(
+                app.PhoneRequest(telefone="27999999999"),
+                SimpleNamespace(),
+            )
+
+        payload = json.loads(response.body)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(payload["cliente"]["login"], "cliente1")
+        self.assertIsNone(payload["cliente"]["link_pagamento"])
 
 
 class ReminderPreferenceTests(unittest.TestCase):

@@ -1527,7 +1527,7 @@ def consultar_cliente(request: PhoneRequest, http_request: Request) -> JSONRespo
         payment = payment_future.result() or {}
         line = line_future.result() or {}
 
-    if not has_payment_result(payment):
+    if not has_payment_result(payment) and not line:
         reseller = clean_text(line.get("user_username")) if line else ""
         support = support_contact_for_reseller(
             reseller,
