@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from urllib.parse import urlparse
 import base64
@@ -68,6 +68,9 @@ PHONE_RATE_LIMIT_WINDOW_SECONDS = int(os.getenv("PHONE_RATE_LIMIT_WINDOW_SECONDS
 ACCESS_TOKEN_TTL_SECONDS = int(os.getenv("ACCESS_TOKEN_TTL_SECONDS", "1800"))
 ACCESS_TOKEN_SECRET = os.getenv("ACCESS_TOKEN_SECRET", "") or API_KEY or VAPID_PRIVATE_KEY
 REMINDER_ADMIN_TOKEN = os.getenv("REMINDER_ADMIN_TOKEN", "")
+DATA_SYNC_INTERVAL_SECONDS = max(60, int(os.getenv("DATA_SYNC_INTERVAL_SECONDS", "600")))
+REMINDER_CHECK_INTERVAL_SECONDS = max(60, int(os.getenv("REMINDER_CHECK_INTERVAL_SECONDS", "3600")))
+DATA_SYNC_WORKERS = max(1, int(os.getenv("DATA_SYNC_WORKERS", "8")))
 TRUSTED_PROXY_IPS = {
     item.strip() for item in os.getenv("TRUSTED_PROXY_IPS", "127.0.0.1,::1").split(",") if item.strip()
 }
@@ -108,10 +111,10 @@ async def security_headers(request: Request, call_next):
 
 
 @app.on_event("startup")
-def start_reminder_worker() -> None:
+def start_background_workers() -> None:
     ensure_data_dir()
     init_database()
-    thread = threading.Thread(target=reminder_loop, daemon=True)
+    thread = threading.Thread(target=maintenance_loop, daemon=True)
     thread.start()
 
 
@@ -583,8 +586,42 @@ def init_database() -> None:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS allowed_resellers (
+                reseller_key TEXT PRIMARY KEY,
+                display_name TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS client_lines (
+                source_line_id TEXT PRIMARY KEY,
+                phone TEXT NOT NULL DEFAULT '',
+                phone_key TEXT NOT NULL DEFAULT '',
+                username TEXT NOT NULL DEFAULT '',
+                username_key TEXT NOT NULL DEFAULT '',
+                password TEXT NOT NULL DEFAULT '',
+                exp_date TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT '',
+                is_enabled INTEGER NOT NULL DEFAULT 0,
+                user_id TEXT NOT NULL DEFAULT '',
+                user_username TEXT NOT NULL DEFAULT '',
+                plan_name TEXT NOT NULL DEFAULT '',
+                max_connections TEXT NOT NULL DEFAULT '',
+                payload_json TEXT NOT NULL,
+                source_updated_at TEXT NOT NULL DEFAULT '',
+                synced_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_client_lines_phone ON client_lines(phone_key)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_client_lines_username ON client_lines(username_key)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_client_lines_reseller ON client_lines(user_username)")
 
-    mirror_legacy_json_files_to_database()
+    import_legacy_data_once()
 
 
 def normalize_device_id(value: Any) -> str:
@@ -892,7 +929,14 @@ def mirror_json_dataset_to_database(dataset: str, value: Any) -> None:
                     )
 
 
-def mirror_legacy_json_files_to_database() -> None:
+def import_legacy_data_once() -> None:
+    with DB_LOCK, db_connect() as conn:
+        migrated = conn.execute(
+            "SELECT value FROM app_schema_meta WHERE key = 'legacy_json_to_sqlite_v1'"
+        ).fetchone()
+    if migrated:
+        return
+
     datasets = (
         ("push_subscriptions", SUBSCRIPTIONS_FILE),
         ("notification_clients", CLIENTS_FILE),
@@ -900,7 +944,54 @@ def mirror_legacy_json_files_to_database() -> None:
         ("support_contacts", SUPPORT_CONTACTS_FILE),
     )
     for dataset, path in datasets:
-        mirror_json_dataset_to_database(dataset, read_json_file(path, {}))
+        if path.exists():
+            mirror_json_dataset_to_database(dataset, read_json_file(path, {}))
+
+    import_allowed_resellers_from_json()
+    with DB_LOCK, db_connect() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO app_schema_meta (key, value) VALUES ('legacy_json_to_sqlite_v1', ?)",
+            (datetime.now(timezone.utc).isoformat(),),
+        )
+
+
+def import_allowed_resellers_from_json() -> list[str]:
+    rows = read_json_file(RESELLER_LOGINS_FILE, [])
+    if not isinstance(rows, list):
+        return []
+
+    names: list[str] = []
+    seen: set[str] = set()
+    now = datetime.now(timezone.utc).isoformat()
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        name = clean_text(row.get("nome"))
+        key = normalize_key(name)
+        if name and key not in seen:
+            seen.add(key)
+            names.append(name)
+
+    if names:
+        with DB_LOCK, db_connect() as conn:
+            conn.execute("DELETE FROM allowed_resellers")
+            conn.executemany(
+                "INSERT INTO allowed_resellers (reseller_key, display_name, updated_at) VALUES (?, ?, ?)",
+                [(normalize_key(name), name, now) for name in names],
+            )
+            conn.executemany(
+                """
+                INSERT INTO resellers
+                    (username, display_name, first_seen_at, last_seen_at, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(username) DO UPDATE SET
+                    display_name = excluded.display_name,
+                    last_seen_at = excluded.last_seen_at,
+                    updated_at = excluded.updated_at
+                """,
+                [(name, name, now, now, now) for name in names],
+            )
+    return names
 
 
 def normalize_whatsapp_number(value: Any) -> str:
@@ -951,23 +1042,29 @@ def support_contact_for_reseller(
     usuario: Any = "",
     vencimento: Any = "",
 ) -> dict[str, str] | None:
-    config = read_json_file(SUPPORT_CONTACTS_FILE, {})
-    if not isinstance(config, dict):
-        config = {}
-
     revenda_text = clean_text(revenda)
     revenda_key = normalize_key(revenda_text)
-    contacts = config.get("revendas") if isinstance(config.get("revendas"), dict) else config
     raw_number = get_reseller_support_whatsapp(revenda_text)
 
     if not raw_number and revenda_key:
-        for key, value in contacts.items():
-            if normalize_key(key) == revenda_key:
-                raw_number = value
-                break
+        with DB_LOCK, db_connect() as conn:
+            row = conn.execute(
+                "SELECT whatsapp FROM support_contacts WHERE contact_type = 'reseller' AND contact_key = ?",
+                (revenda_text,),
+            ).fetchone()
+            if not row:
+                rows = conn.execute(
+                    "SELECT contact_key, whatsapp FROM support_contacts WHERE contact_type = 'reseller'"
+                ).fetchall()
+                row = next((item for item in rows if normalize_key(item["contact_key"]) == revenda_key), None)
+        raw_number = clean_text(row["whatsapp"]) if row else ""
 
     if not raw_number:
-        raw_number = config.get("default") or os.getenv("SUPPORT_WHATSAPP_DEFAULT", "")
+        with DB_LOCK, db_connect() as conn:
+            row = conn.execute(
+                "SELECT whatsapp FROM support_contacts WHERE contact_key = 'default'"
+            ).fetchone()
+        raw_number = clean_text(row["whatsapp"]) if row else os.getenv("SUPPORT_WHATSAPP_DEFAULT", "")
 
     number = normalize_whatsapp_number(raw_number)
     if len(number) < 12:
@@ -992,25 +1089,15 @@ def validate_support_whatsapp(value: Any) -> str:
 
 
 def allowed_reseller_names() -> list[str]:
-    rows = read_json_file(RESELLER_LOGINS_FILE, [])
-    if not isinstance(rows, list):
-        return []
-
-    names = []
-    seen = set()
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        name = clean_text(row.get("nome"))
-        key = normalize_key(name)
-        if name and key not in seen:
-            seen.add(key)
-            names.append(name)
-    return names
+    with DB_LOCK, db_connect() as conn:
+        rows = conn.execute(
+            "SELECT display_name FROM allowed_resellers ORDER BY display_name COLLATE NOCASE"
+        ).fetchall()
+    return [clean_text(row["display_name"]) for row in rows]
 
 
 def sync_allowed_resellers() -> list[str]:
-    names = allowed_reseller_names()
+    names = import_allowed_resellers_from_json() or allowed_reseller_names()
     if not names:
         return []
 
@@ -1033,12 +1120,17 @@ def sync_allowed_resellers() -> list[str]:
 
 
 def list_admin_support_contacts() -> dict[str, Any]:
-    config = read_json_file(SUPPORT_CONTACTS_FILE, {})
-    if not isinstance(config, dict):
-        config = {}
-    official = normalize_whatsapp_number(config.get("default") or os.getenv("SUPPORT_WHATSAPP_DEFAULT", ""))
+    with DB_LOCK, db_connect() as conn:
+        official_row = conn.execute(
+            "SELECT whatsapp FROM support_contacts WHERE contact_key = 'default'"
+        ).fetchone()
+    official = normalize_whatsapp_number(
+        clean_text(official_row["whatsapp"]) if official_row else os.getenv("SUPPORT_WHATSAPP_DEFAULT", "")
+    )
 
-    allowed_names = sync_allowed_resellers()
+    allowed_names = allowed_reseller_names()
+    if not allowed_names and RESELLER_LOGINS_FILE.exists():
+        allowed_names = import_allowed_resellers_from_json()
     with DB_LOCK, db_connect() as conn:
         if allowed_names:
             placeholders = ",".join("?" for _ in allowed_names)
@@ -1077,13 +1169,18 @@ def list_admin_support_contacts() -> dict[str, Any]:
 
 def save_official_support_whatsapp(value: Any) -> str:
     number = validate_support_whatsapp(value)
-    with DB_LOCK:
-        config = read_json_file(SUPPORT_CONTACTS_FILE, {})
-        if not isinstance(config, dict):
-            config = {}
-        config["default"] = number
-        write_json_file(SUPPORT_CONTACTS_FILE, config)
-    mirror_json_dataset_to_database("support_contacts", config)
+    with DB_LOCK, db_connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO support_contacts (contact_key, contact_type, whatsapp, updated_at)
+            VALUES ('default', 'official', ?, ?)
+            ON CONFLICT(contact_key) DO UPDATE SET
+                contact_type = excluded.contact_type,
+                whatsapp = excluded.whatsapp,
+                updated_at = excluded.updated_at
+            """,
+            (number, datetime.now(timezone.utc).isoformat()),
+        )
     return number
 
 
@@ -1119,19 +1216,41 @@ def normalize_reminder_days(value: Any = None) -> list[int]:
 
 
 def get_reminder_days_for_client(*values: Any) -> list[int]:
-    subscriptions = read_json_file(SUBSCRIPTIONS_FILE, {})
-    for key_candidate in phone_lookup_keys(*values):
-        record = subscriptions.get(key_candidate)
-        if isinstance(record, dict) and record.get("subscription"):
-            return normalize_reminder_days(record.get("reminder_days"))
+    keys = phone_lookup_keys(*values)
+    if not keys:
+        return sorted(REMINDER_DAYS, reverse=True)
+    placeholders = ",".join("?" for _ in keys)
+    with DB_LOCK, db_connect() as conn:
+        row = conn.execute(
+            f"SELECT subscription_json, reminder_days_json FROM push_subscriptions WHERE lookup_key IN ({placeholders}) LIMIT 1",
+            keys,
+        ).fetchone()
+    if row:
+        try:
+            subscription = json.loads(row["subscription_json"])
+            days = json.loads(row["reminder_days_json"])
+        except (TypeError, json.JSONDecodeError):
+            subscription, days = {}, None
+        if isinstance(subscription, dict) and subscription:
+            return normalize_reminder_days(days)
     return sorted(REMINDER_DAYS, reverse=True)
 
 
 def has_active_reminders_for_client(*values: Any) -> bool:
-    subscriptions = read_json_file(SUBSCRIPTIONS_FILE, {})
-    for key_candidate in phone_lookup_keys(*values):
-        record = subscriptions.get(key_candidate)
-        subscription = record.get("subscription") if isinstance(record, dict) else None
+    keys = phone_lookup_keys(*values)
+    if not keys:
+        return False
+    placeholders = ",".join("?" for _ in keys)
+    with DB_LOCK, db_connect() as conn:
+        rows = conn.execute(
+            f"SELECT subscription_json FROM push_subscriptions WHERE lookup_key IN ({placeholders})",
+            keys,
+        ).fetchall()
+    for row in rows:
+        try:
+            subscription = json.loads(row["subscription_json"])
+        except (TypeError, json.JSONDecodeError):
+            continue
         if isinstance(subscription, dict) and subscription.get("endpoint"):
             return True
     return False
@@ -1143,8 +1262,7 @@ def save_notification_client(cliente: dict[str, Any]) -> None:
     if not phone or not parse_br_date(vencimento):
         return
 
-    clients = read_json_file(CLIENTS_FILE, {})
-    clients[phone] = {
+    record = {
         "telefone": clean_text(cliente.get("telefone")),
         "login": clean_text(cliente.get("login")),
         "vencimento": vencimento,
@@ -1153,8 +1271,34 @@ def save_notification_client(cliente: dict[str, Any]) -> None:
         "revenda": clean_text(cliente.get("revenda")),
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
-    write_json_file(CLIENTS_FILE, clients)
-    mirror_json_dataset_to_database("notification_clients", clients)
+    with DB_LOCK, db_connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO notification_clients
+                (phone_key, telefone, login, vencimento, plano, link_pagamento, revenda, payload_json, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(phone_key) DO UPDATE SET
+                telefone = excluded.telefone,
+                login = excluded.login,
+                vencimento = excluded.vencimento,
+                plano = excluded.plano,
+                link_pagamento = excluded.link_pagamento,
+                revenda = excluded.revenda,
+                payload_json = excluded.payload_json,
+                updated_at = excluded.updated_at
+            """,
+            (
+                phone,
+                record["telefone"],
+                record["login"],
+                record["vencimento"],
+                record["plano"],
+                record["link_pagamento"],
+                record["revenda"],
+                json.dumps(record, ensure_ascii=False, separators=(",", ":")),
+                record["updated_at"],
+            ),
+        )
 
 
 def send_push(subscription: dict[str, Any], title: str, body: str, url: str = "/") -> bool:
@@ -1189,15 +1333,17 @@ def send_push(subscription: dict[str, Any], title: str, body: str, url: str = "/
 
 
 def check_and_send_reminders() -> dict[str, int]:
-    clients = read_json_file(CLIENTS_FILE, {})
-    subscriptions = read_json_file(SUBSCRIPTIONS_FILE, {})
-    sent = read_json_file(SENT_REMINDERS_FILE, {})
+    with DB_LOCK, db_connect() as conn:
+        client_rows = conn.execute(
+            "SELECT phone_key, telefone, login, vencimento, link_pagamento FROM notification_clients"
+        ).fetchall()
     today = datetime.now().date()
     stats = {"checked": 0, "sent": 0, "skipped": 0}
 
-    for phone, client in clients.items():
+    for client in client_rows:
+        phone = clean_text(client["phone_key"])
         stats["checked"] += 1
-        due_date = parse_br_date(client.get("vencimento"))
+        due_date = parse_br_date(client["vencimento"])
         if not due_date:
             stats["skipped"] += 1
             continue
@@ -1208,17 +1354,24 @@ def check_and_send_reminders() -> dict[str, int]:
             continue
 
         key = reminder_key(phone, due_date, days_left)
-        if sent.get(key):
-            stats["skipped"] += 1
-            continue
-
         subscription = None
         reminder_days = sorted(REMINDER_DAYS, reverse=True)
-        for key_candidate in phone_lookup_keys(phone, client.get("telefone"), client.get("login")):
-            subscription_record = subscriptions.get(key_candidate, {})
-            subscription = subscription_record.get("subscription")
-            if subscription:
-                reminder_days = normalize_reminder_days(subscription_record.get("reminder_days"))
+        lookup_keys = phone_lookup_keys(phone, client["telefone"], client["login"])
+        placeholders = ",".join("?" for _ in lookup_keys)
+        with DB_LOCK, db_connect() as conn:
+            subscription_rows = conn.execute(
+                f"SELECT subscription_json, reminder_days_json FROM push_subscriptions WHERE lookup_key IN ({placeholders})",
+                lookup_keys,
+            ).fetchall()
+        for row in subscription_rows:
+            try:
+                candidate = json.loads(row["subscription_json"])
+                candidate_days = json.loads(row["reminder_days_json"])
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if isinstance(candidate, dict) and candidate.get("endpoint"):
+                subscription = candidate
+                reminder_days = normalize_reminder_days(candidate_days)
                 break
         if not subscription:
             stats["skipped"] += 1
@@ -1233,30 +1386,30 @@ def check_and_send_reminders() -> dict[str, int]:
             when = "vence em 1 dia"
         else:
             when = f"vence em {days_left} dias"
+        claimed_at = datetime.now(timezone.utc).isoformat()
+        with DB_LOCK, db_connect() as conn:
+            claimed = conn.execute(
+                "INSERT OR IGNORE INTO sent_reminders (reminder_key, sent_at) VALUES (?, ?)",
+                (key, claimed_at),
+            ).rowcount == 1
+        if not claimed:
+            stats["skipped"] += 1
+            continue
+
         ok = send_push(
             subscription,
             "Mega App: lembrete de vencimento",
             f"Seu acesso {when}. Toque para abrir o pagamento.",
-            client.get("link_pagamento") or "/",
+            client["link_pagamento"] or "/",
         )
         if ok:
-            sent[key] = datetime.now(timezone.utc).isoformat()
             stats["sent"] += 1
         else:
+            with DB_LOCK, db_connect() as conn:
+                conn.execute("DELETE FROM sent_reminders WHERE reminder_key = ? AND sent_at = ?", (key, claimed_at))
             stats["skipped"] += 1
 
-    write_json_file(SENT_REMINDERS_FILE, sent)
-    mirror_json_dataset_to_database("sent_reminders", sent)
     return stats
-
-
-def reminder_loop() -> None:
-    while True:
-        try:
-            check_and_send_reminders()
-        except Exception:
-            pass
-        time.sleep(60 * 60)
 
 
 def has_payment_result(payload: dict[str, Any]) -> bool:
@@ -1344,7 +1497,7 @@ def search_payment_data(phone: str) -> dict[str, Any] | None:
     return None
 
 
-def search_line_data(phone: str) -> dict[str, Any] | None:
+def search_line_data_remote(phone: str) -> dict[str, Any] | None:
     if not API_KEY:
         return None
 
@@ -1399,6 +1552,48 @@ def search_line_data(phone: str) -> dict[str, Any] | None:
     return max(matching_lines, key=line_priority_score)
 
 
+def search_line_data_from_database(phone: str) -> dict[str, Any] | None:
+    variants = phone_search_variants(phone)
+    exact_keys = {only_digits(item) for item in variants if only_digits(item)}
+    suffixes = {item[-8:] for item in exact_keys if len(item) >= 8}
+    if not exact_keys and not suffixes:
+        return None
+
+    clauses: list[str] = []
+    params: list[str] = []
+    if exact_keys:
+        placeholders = ",".join("?" for _ in exact_keys)
+        clauses.extend((f"phone_key IN ({placeholders})", f"username_key IN ({placeholders})"))
+        params.extend(sorted(exact_keys))
+        params.extend(sorted(exact_keys))
+    for suffix in sorted(suffixes):
+        clauses.extend(("phone_key LIKE ?", "username_key LIKE ?"))
+        params.extend((f"%{suffix}", f"%{suffix}"))
+
+    with DB_LOCK, db_connect() as conn:
+        rows = conn.execute(
+            f"SELECT payload_json FROM client_lines WHERE {' OR '.join(clauses)} LIMIT 100",
+            params,
+        ).fetchall()
+
+    matches: list[dict[str, Any]] = []
+    for row in rows:
+        try:
+            payload = json.loads(row["payload_json"])
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if isinstance(payload, dict):
+            matches.append(payload)
+    return max(matches, key=line_priority_score) if matches else None
+
+
+def search_line_data(phone: str) -> dict[str, Any] | None:
+    local = search_line_data_from_database(phone)
+    if local:
+        return local
+    return search_line_data_remote(phone)
+
+
 def line_priority_score(line: dict[str, Any]) -> tuple[int, int, int]:
     status_text = clean_text(line.get("status")).lower()
     is_enabled = line.get("is_enabled")
@@ -1419,6 +1614,153 @@ def line_priority_score(line: dict[str, Any]) -> tuple[int, int, int]:
     current_score = 1 if not_expired else 0
 
     return active_score, current_score, expiration
+
+
+def fetch_line_page(page: int, per_page: int = 1000) -> dict[str, Any]:
+    response = requests.get(
+        API_BASE_URL,
+        headers={"Api-Key": API_KEY},
+        params={"page": page, "per_page": per_page},
+        timeout=45,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    if not isinstance(payload, dict):
+        raise ValueError("A API de linhas retornou um formato invalido.")
+    return payload
+
+
+def sync_client_lines(per_page: int = 1000, workers: int | None = None) -> dict[str, int]:
+    if not API_KEY:
+        raise RuntimeError("PAINEL_BEST_API_KEY nao configurada.")
+    worker_count = workers or DATA_SYNC_WORKERS
+
+    first_page = fetch_line_page(1, per_page)
+    last_page = max(1, int(first_page.get("last_page") or 1))
+    payloads = [first_page]
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        futures = [executor.submit(fetch_line_page, page, per_page) for page in range(2, last_page + 1)]
+        for future in as_completed(futures):
+            payloads.append(future.result())
+
+    synced_at = datetime.now(timezone.utc).isoformat()
+    lines: list[tuple[Any, ...]] = []
+    reseller_counts: dict[str, dict[str, Any]] = {}
+    for payload in payloads:
+        for line in payload.get("results") or []:
+            if not isinstance(line, dict):
+                continue
+            source_line_id = clean_text(line.get("id") or line.get("line_id"))
+            if not source_line_id:
+                continue
+            phone = clean_text(line.get("phone"))
+            username = clean_text(line.get("username"))
+            reseller = clean_text(line.get("user_username"))
+            lines.append(
+                (
+                    source_line_id,
+                    phone,
+                    only_digits(phone),
+                    username,
+                    only_digits(username),
+                    clean_text(line.get("password")),
+                    clean_text(line.get("exp_date")),
+                    clean_text(line.get("status")),
+                    1 if line.get("is_enabled") is True else 0,
+                    clean_text(line.get("user_id")),
+                    reseller,
+                    clean_text(line.get("plan_name") or line.get("type")),
+                    clean_text(line.get("max_connections")),
+                    json.dumps(line, ensure_ascii=False, separators=(",", ":")),
+                    clean_text(line.get("updated_at")),
+                    synced_at,
+                )
+            )
+            if reseller:
+                item = reseller_counts.setdefault(
+                    reseller,
+                    {"source_user_id": clean_text(line.get("user_id")), "total": 0, "active": 0},
+                )
+                item["total"] += 1
+                if line.get("is_enabled") is True and clean_text(line.get("status")).lower() == "active":
+                    item["active"] += 1
+
+    with DB_LOCK, db_connect() as conn:
+        conn.execute("DROP TABLE IF EXISTS client_lines_staging")
+        conn.execute("CREATE TABLE client_lines_staging AS SELECT * FROM client_lines WHERE 0")
+        conn.executemany(
+            """
+            INSERT INTO client_lines_staging
+                (source_line_id, phone, phone_key, username, username_key, password, exp_date,
+                 status, is_enabled, user_id, user_username, plan_name, max_connections,
+                 payload_json, source_updated_at, synced_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            lines,
+        )
+        conn.execute("DELETE FROM client_lines")
+        conn.execute("INSERT INTO client_lines SELECT * FROM client_lines_staging")
+        conn.execute("DROP TABLE client_lines_staging")
+
+        for username, counts in reseller_counts.items():
+            conn.execute(
+                """
+                INSERT INTO resellers
+                    (source_user_id, username, display_name, line_count, active_line_count,
+                     first_seen_at, last_seen_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(username) DO UPDATE SET
+                    source_user_id = excluded.source_user_id,
+                    line_count = excluded.line_count,
+                    active_line_count = excluded.active_line_count,
+                    last_seen_at = excluded.last_seen_at,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    counts["source_user_id"], username, username, counts["total"], counts["active"],
+                    synced_at, synced_at, synced_at,
+                ),
+            )
+        conn.execute(
+            "INSERT OR REPLACE INTO app_schema_meta (key, value) VALUES ('client_lines_last_sync', ?)",
+            (synced_at,),
+        )
+    return {"lines": len(lines), "resellers": len(reseller_counts), "pages": last_page}
+
+
+def acquire_maintenance_lease(name: str, lease_seconds: int) -> bool:
+    now = time.time()
+    key = f"lease:{name}"
+    with DB_LOCK, db_connect() as conn:
+        conn.execute("INSERT OR IGNORE INTO app_schema_meta (key, value) VALUES (?, '0')", (key,))
+        result = conn.execute(
+            "UPDATE app_schema_meta SET value = ? WHERE key = ? AND CAST(value AS REAL) <= ?",
+            (str(now + lease_seconds), key, now),
+        )
+    return result.rowcount == 1
+
+
+def maintenance_loop() -> None:
+    next_sync = 0.0
+    next_reminder_check = 0.0
+    while True:
+        now = time.time()
+        if now >= next_sync:
+            next_sync = now + DATA_SYNC_INTERVAL_SECONDS
+            if acquire_maintenance_lease("client_lines_sync", DATA_SYNC_INTERVAL_SECONDS - 5):
+                try:
+                    stats = sync_client_lines()
+                    LOGGER.info("client_lines_sync lines=%s resellers=%s pages=%s", stats["lines"], stats["resellers"], stats["pages"])
+                except Exception:
+                    LOGGER.exception("Falha ao sincronizar clientes no SQLite")
+        if now >= next_reminder_check:
+            next_reminder_check = now + REMINDER_CHECK_INTERVAL_SECONDS
+            try:
+                stats = check_and_send_reminders()
+                LOGGER.info("reminder_check checked=%s sent=%s skipped=%s", stats["checked"], stats["sent"], stats["skipped"])
+            except Exception:
+                LOGGER.exception("Falha ao verificar lembretes")
+        time.sleep(30)
 
 
 def extract_pix_code(page_html: str) -> str | None:
@@ -1546,17 +1888,36 @@ def inscrever_notificacoes(request: NotificationSubscriptionRequest) -> dict[str
         raise HTTPException(status_code=400, detail="Escolha pelo menos um momento para receber o lembrete.")
 
     save_notification_client(request.cliente)
-    subscriptions = read_json_file(SUBSCRIPTIONS_FILE, {})
     subscription_record = {
         "telefone": clean_text(request.telefone),
         "subscription": request.subscription,
         "reminder_days": reminder_days,
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
-    for key_candidate in phone_lookup_keys(phone, request.cliente.get("telefone"), request.cliente.get("login")):
-        subscriptions[key_candidate] = subscription_record
-    write_json_file(SUBSCRIPTIONS_FILE, subscriptions)
-    mirror_json_dataset_to_database("push_subscriptions", subscriptions)
+    lookup_keys = phone_lookup_keys(phone, request.cliente.get("telefone"), request.cliente.get("login"))
+    subscription_json = json.dumps(request.subscription, ensure_ascii=False, separators=(",", ":"))
+    reminder_days_json = json.dumps(reminder_days, separators=(",", ":"))
+    with DB_LOCK, db_connect() as conn:
+        for key_candidate in lookup_keys:
+            conn.execute(
+                """
+                INSERT INTO push_subscriptions
+                    (lookup_key, telefone, subscription_json, reminder_days_json, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(lookup_key) DO UPDATE SET
+                    telefone = excluded.telefone,
+                    subscription_json = excluded.subscription_json,
+                    reminder_days_json = excluded.reminder_days_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    key_candidate,
+                    subscription_record["telefone"],
+                    subscription_json,
+                    reminder_days_json,
+                    subscription_record["updated_at"],
+                ),
+            )
     test_sent = send_push(
         request.subscription,
         "Mega App: notificações ativadas",

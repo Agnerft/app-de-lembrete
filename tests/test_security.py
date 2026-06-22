@@ -238,6 +238,37 @@ class AppSlotsTests(unittest.TestCase):
 
 
 class PaymentMatchTests(unittest.TestCase):
+    def test_client_line_is_searched_in_sqlite_before_remote_api(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "lines.sqlite3"
+            line = {
+                "id": 123,
+                "phone": "555181451949",
+                "username": "29144975137",
+                "user_username": "Williamfarias",
+                "status": "expired",
+                "is_enabled": True,
+            }
+            with patch.object(app, "DB_FILE", database):
+                app.init_database()
+                with app.db_connect() as connection:
+                    connection.execute(
+                        """
+                        INSERT INTO client_lines
+                            (source_line_id, phone, phone_key, username, username_key, payload_json, synced_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            "123", line["phone"], line["phone"], line["username"], line["username"],
+                            json.dumps(line), datetime.now().isoformat(),
+                        ),
+                    )
+                with patch.object(app, "search_line_data_remote") as remote:
+                    found = app.search_line_data("555181451949")
+
+        self.assertEqual(found["user_username"], "Williamfarias")
+        remote.assert_not_called()
+
     def response_with(self, payload):
         return SimpleNamespace(status_code=200, json=lambda: payload)
 
@@ -341,7 +372,9 @@ class ReminderPreferenceTests(unittest.TestCase):
 
     def test_active_reminders_require_a_subscription_endpoint(self):
         with tempfile.TemporaryDirectory() as directory:
-            subscriptions_file = Path(directory) / "subscriptions.json"
+            base = Path(directory)
+            subscriptions_file = base / "subscriptions.json"
+            database = base / "reminders.sqlite3"
             phone = "5551999999999"
             app.write_json_file(
                 subscriptions_file,
@@ -350,7 +383,11 @@ class ReminderPreferenceTests(unittest.TestCase):
                     "5551888888888": {"subscription": {}},
                 },
             )
-            with patch.object(app, "SUBSCRIPTIONS_FILE", subscriptions_file):
+            with (
+                patch.object(app, "SUBSCRIPTIONS_FILE", subscriptions_file),
+                patch.object(app, "DB_FILE", database),
+            ):
+                app.init_database()
                 self.assertTrue(app.has_active_reminders_for_client(phone))
                 self.assertFalse(app.has_active_reminders_for_client("5551888888888"))
 
@@ -382,13 +419,17 @@ class ReminderPreferenceTests(unittest.TestCase):
                 self.assertEqual(skipped["sent"], 0)
                 send_push.assert_not_called()
 
-                app.write_json_file(
-                    subscriptions_file,
-                    {phone: {"subscription": {"endpoint": "https://example.test/push"}, "reminder_days": [3]}},
-                )
+                with app.db_connect() as connection:
+                    connection.execute(
+                        "UPDATE push_subscriptions SET reminder_days_json = '[3]' WHERE lookup_key = ?",
+                        (phone,),
+                    )
                 delivered = app.check_and_send_reminders()
+                with app.db_connect() as connection:
+                    sent_count = connection.execute("SELECT COUNT(*) FROM sent_reminders").fetchone()[0]
 
         self.assertEqual(delivered["sent"], 1)
+        self.assertEqual(sent_count, 1)
 
 
 if __name__ == "__main__":

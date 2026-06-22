@@ -10,6 +10,8 @@ Aplicação web responsiva para consulta de acesso, vencimento e pagamento, com 
 - Contagem anônima de instalações e curtidas.
 - Painel administrativo protegido por token.
 - Interface PWA responsiva para desktop e celular.
+- Clientes e revendas pesquisados no SQLite, com sincronizacao automatica da API The Best a cada 10 minutos.
+- Lembretes, inscricoes push e contatos persistidos diretamente no SQLite.
 
 ## Executar localmente
 
@@ -36,5 +38,16 @@ Aplicação web responsiva para consulta de acesso, vencimento e pagamento, com 
 ```powershell
 python -m unittest discover -s tests -v
 ```
+
+## Sincronizacao manual
+
+O servico sincroniza automaticamente ao iniciar e a cada 10 minutos. Para executar uma carga manual:
+
+```powershell
+python scripts/sync_resellers.py
+```
+
+O servico de pagamento da porta 8080 continua sendo consultado somente para obter o link de pagamento,
+pois esse campo nao existe na API The Best.
 
 Dados locais, credenciais, bancos SQLite e arquivos de QA não são versionados.
