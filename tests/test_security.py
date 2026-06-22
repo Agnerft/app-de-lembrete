@@ -301,6 +301,21 @@ class ReminderPreferenceTests(unittest.TestCase):
         self.assertEqual(app.normalize_reminder_days([]), [])
         self.assertEqual(app.normalize_reminder_days(), [3, 2, 1, 0])
 
+    def test_active_reminders_require_a_subscription_endpoint(self):
+        with tempfile.TemporaryDirectory() as directory:
+            subscriptions_file = Path(directory) / "subscriptions.json"
+            phone = "5551999999999"
+            app.write_json_file(
+                subscriptions_file,
+                {
+                    phone: {"subscription": {"endpoint": "https://example.test/push"}},
+                    "5551888888888": {"subscription": {}},
+                },
+            )
+            with patch.object(app, "SUBSCRIPTIONS_FILE", subscriptions_file):
+                self.assertTrue(app.has_active_reminders_for_client(phone))
+                self.assertFalse(app.has_active_reminders_for_client("5551888888888"))
+
     def test_reminders_only_send_on_selected_days(self):
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)

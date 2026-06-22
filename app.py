@@ -990,6 +990,16 @@ def get_reminder_days_for_client(*values: Any) -> list[int]:
     return sorted(REMINDER_DAYS, reverse=True)
 
 
+def has_active_reminders_for_client(*values: Any) -> bool:
+    subscriptions = read_json_file(SUBSCRIPTIONS_FILE, {})
+    for key_candidate in phone_lookup_keys(*values):
+        record = subscriptions.get(key_candidate)
+        subscription = record.get("subscription") if isinstance(record, dict) else None
+        if isinstance(subscription, dict) and subscription.get("endpoint"):
+            return True
+    return False
+
+
 def save_notification_client(cliente: dict[str, Any]) -> None:
     phone = only_digits(cliente.get("telefone") or cliente.get("login"))
     vencimento = clean_text(cliente.get("vencimento"))
@@ -1583,6 +1593,7 @@ def consultar_cliente(request: PhoneRequest, http_request: Request) -> JSONRespo
     )
     cliente["app_preferencia"] = get_app_preference(cliente.get("telefone"), cliente.get("login"))
     cliente["lembrete_dias"] = get_reminder_days_for_client(cliente.get("telefone"), cliente.get("login"))
+    cliente["lembretes_ativos"] = has_active_reminders_for_client(cliente.get("telefone"), cliente.get("login"))
     save_notification_client(cliente)
     record_admin_audit_event(cliente.get("login"), cliente.get("revenda"))
     access_token = create_access_token(cliente.get("telefone"), cliente.get("login"))

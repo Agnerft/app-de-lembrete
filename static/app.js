@@ -17,6 +17,10 @@ const noLink = document.getElementById('noLink');
 const installButton = document.getElementById('installButton');
 const installDialog = document.getElementById('installDialog');
 const installSteps = document.getElementById('installSteps');
+const appPromoDialog = document.getElementById('appPromoDialog');
+const appPromoInstall = document.getElementById('appPromoInstall');
+const appPromoReminders = document.getElementById('appPromoReminders');
+const appPromoFeedback = document.getElementById('appPromoFeedback');
 const reminderButton = document.getElementById('reminderButton');
 const reminderDayInputs = [...document.querySelectorAll('input[name="reminderDay"]')];
 const supportLink = document.getElementById('supportLink');
@@ -42,6 +46,7 @@ let deferredInstallPrompt = null;
 let lastCliente = null;
 let lastAccessToken = null;
 let communityLiked = false;
+let promoSeenThisSession = false;
 
 function getCommunityDeviceId() {
   const storageKey = 'mega-app-community-device-id';
@@ -339,8 +344,8 @@ function renderResult(cliente) {
       resultPanel.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
   });
-  reminderButton.classList.remove('active');
-  setReminderButtonLabel('Ativar lembretes');
+  reminderButton.classList.toggle('active', Boolean(cliente.lembretes_ativos));
+  setReminderButtonLabel(cliente.lembretes_ativos ? 'Lembretes ativados' : 'Ativar lembretes');
 }
 
 appSlots.addEventListener('change', async (event) => {
@@ -487,6 +492,7 @@ form.addEventListener('submit', async (event) => {
     lastAccessToken = data.access_token || null;
     renderResult(data.cliente);
     setMessage('');
+    showAppPromo();
   } catch (error) {
     resultPanel.hidden = true;
     resultPanel.classList.remove('is-visible');
@@ -502,10 +508,10 @@ window.addEventListener('beforeinstallprompt', (event) => {
   updateInstallState();
 });
 
-installButton.addEventListener('click', async () => {
+async function requestAppInstall() {
   if (isStandaloneApp()) {
     updateInstallState();
-    return;
+    return true;
   }
 
   if (deferredInstallPrompt) {
@@ -515,11 +521,17 @@ installButton.addEventListener('click', async () => {
     if (choice.outcome === 'accepted') {
       setMessage('Instalação iniciada.', false);
       updateInstallState(true);
+      return true;
     }
-    return;
+    return false;
   }
 
   showInstallHelp();
+  return false;
+}
+
+installButton.addEventListener('click', async () => {
+  await requestAppInstall();
 });
 
 window.addEventListener('appinstalled', () => {
@@ -527,21 +539,21 @@ window.addEventListener('appinstalled', () => {
   updateInstallState(true);
 });
 
-reminderButton.addEventListener('click', async () => {
+async function activateReminders() {
   if (!lastCliente) {
     setMessage('Pesquise seu telefone antes de ativar lembretes.');
-    return;
+    return false;
   }
   if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
     setMessage('Este navegador não suporta notificações do app.');
-    return;
+    return false;
   }
   const reminderDays = reminderDayInputs
     .filter((input) => input.checked)
     .map((input) => Number(input.value));
   if (!reminderDays.length) {
     setMessage('Escolha pelo menos um momento para receber o lembrete.', 'warning');
-    return;
+    return false;
   }
 
   try {
@@ -584,6 +596,8 @@ reminderButton.addEventListener('click', async () => {
 
     reminderButton.classList.add('active');
     setReminderButtonLabel('Lembretes ativados');
+    lastCliente.lembretes_ativos = true;
+    rememberActiveReminders();
     const scheduleLabels = reminderDays.map((day) => {
       if (day === 0) return 'no dia';
       return day === 1 ? '1 dia antes' : `${day} dias antes`;
@@ -597,6 +611,7 @@ reminderButton.addEventListener('click', async () => {
         : `Lembretes ativados para ${scheduleText}. O teste não foi enviado, mas os avisos continuam programados.`,
       data.teste_enviado ? false : 'warning',
     );
+    return true;
   } catch (error) {
     const text = error.message || 'Não foi possível ativar as notificações.';
     if (text.toLowerCase().includes('permission denied') || text.toLowerCase().includes('registration failed')) {
@@ -604,6 +619,16 @@ reminderButton.addEventListener('click', async () => {
     } else {
       setMessage(text);
     }
+    return false;
+  }
+}
+
+reminderButton.addEventListener('click', async () => {
+  reminderButton.disabled = true;
+  try {
+    await activateReminders();
+  } finally {
+    reminderButton.disabled = false;
   }
 });
 
@@ -623,6 +648,95 @@ if ('serviceWorker' in navigator) {
 }
 
 updateInstallState();
+
+function markAppPromoSeen() {
+  promoSeenThisSession = true;
+  try {
+    window.sessionStorage.setItem('mega-app-promo-seen', '1');
+  } catch (_error) {
+    // The in-memory flag still prevents repeated prompts on this page.
+  }
+}
+
+function reminderStorageKey() {
+  const identity = String(lastCliente?.telefone || lastCliente?.login || '').replace(/\D/g, '');
+  return identity ? `mega-app-reminders-enabled:${identity}` : '';
+}
+
+function rememberActiveReminders() {
+  const key = reminderStorageKey();
+  if (!key) return;
+  try {
+    window.localStorage.setItem(key, '1');
+  } catch (_error) {
+    // The server remains the source of truth when storage is unavailable.
+  }
+}
+
+function hasRememberedActiveReminders() {
+  if (lastCliente?.lembretes_ativos) return true;
+  const key = reminderStorageKey();
+  if (!key) return false;
+  try {
+    return window.localStorage.getItem(key) === '1';
+  } catch (_error) {
+    return false;
+  }
+}
+
+function showAppPromo() {
+  let alreadySeen = promoSeenThisSession;
+  try {
+    alreadySeen ||= window.sessionStorage.getItem('mega-app-promo-seen') === '1';
+  } catch (_error) {
+    // Storage can be unavailable in private browsing.
+  }
+  if (alreadySeen || hasRememberedActiveReminders() || isStandaloneApp() || typeof appPromoDialog?.showModal !== 'function') return;
+
+  markAppPromoSeen();
+  appPromoFeedback.textContent = '';
+  window.setTimeout(() => {
+    if (!appPromoDialog.open) appPromoDialog.showModal();
+  }, 450);
+}
+
+appPromoInstall.addEventListener('click', async () => {
+  appPromoInstall.disabled = true;
+  appPromoFeedback.textContent = '';
+  try {
+    if (!deferredInstallPrompt && !isStandaloneApp() && appPromoDialog.open) {
+      appPromoDialog.close('install-help');
+    }
+    const installed = await requestAppInstall();
+    if (installed && appPromoDialog.open) appPromoDialog.close('installed');
+  } finally {
+    appPromoInstall.disabled = false;
+  }
+});
+
+appPromoReminders.addEventListener('click', async () => {
+  const isIOSBrowser = /iphone|ipad|ipod/i.test(navigator.userAgent) && !isStandaloneApp();
+  if (isIOSBrowser) {
+    appPromoFeedback.textContent = 'No iPhone ou iPad, instale o Mega App na tela inicial para liberar os lembretes.';
+    return;
+  }
+
+  appPromoReminders.disabled = true;
+  appPromoFeedback.textContent = 'Aguardando a permissão do navegador...';
+  try {
+    const activated = await activateReminders();
+    if (activated) {
+      appPromoFeedback.textContent = 'Lembretes ativados com sucesso.';
+      window.setTimeout(() => {
+        if (appPromoDialog.open) appPromoDialog.close('reminders-enabled');
+      }, 700);
+    } else {
+      appPromoFeedback.textContent = message.textContent || 'Não foi possível ativar os lembretes.';
+    }
+  } finally {
+    appPromoReminders.disabled = false;
+  }
+});
 
 function showInstallHelp() {
   const ua = navigator.userAgent.toLowerCase();
