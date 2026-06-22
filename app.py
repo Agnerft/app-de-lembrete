@@ -538,6 +538,53 @@ def init_database() -> None:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS push_subscriptions (
+                lookup_key TEXT PRIMARY KEY,
+                telefone TEXT NOT NULL DEFAULT '',
+                subscription_json TEXT NOT NULL,
+                reminder_days_json TEXT NOT NULL DEFAULT '[]',
+                updated_at TEXT NOT NULL DEFAULT ''
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS notification_clients (
+                phone_key TEXT PRIMARY KEY,
+                telefone TEXT NOT NULL DEFAULT '',
+                login TEXT NOT NULL DEFAULT '',
+                vencimento TEXT NOT NULL DEFAULT '',
+                plano TEXT NOT NULL DEFAULT '',
+                link_pagamento TEXT NOT NULL DEFAULT '',
+                revenda TEXT NOT NULL DEFAULT '',
+                payload_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL DEFAULT ''
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_notification_clients_due ON notification_clients(vencimento)")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS sent_reminders (
+                reminder_key TEXT PRIMARY KEY,
+                sent_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS support_contacts (
+                contact_key TEXT PRIMARY KEY,
+                contact_type TEXT NOT NULL,
+                whatsapp TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+
+    mirror_legacy_json_files_to_database()
 
 
 def normalize_device_id(value: Any) -> str:
@@ -767,6 +814,95 @@ def write_json_file(path: Path, value: Any) -> None:
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def mirror_json_dataset_to_database(dataset: str, value: Any) -> None:
+    now = datetime.now(timezone.utc).isoformat()
+    with DB_LOCK, db_connect() as conn:
+        if dataset == "push_subscriptions":
+            conn.execute("DELETE FROM push_subscriptions")
+            if isinstance(value, dict):
+                for lookup_key, record in value.items():
+                    if not isinstance(record, dict):
+                        continue
+                    conn.execute(
+                        """
+                        INSERT INTO push_subscriptions
+                            (lookup_key, telefone, subscription_json, reminder_days_json, updated_at)
+                        VALUES (?, ?, ?, ?, ?)
+                        """,
+                        (
+                            clean_text(lookup_key),
+                            clean_text(record.get("telefone")),
+                            json.dumps(record.get("subscription") or {}, ensure_ascii=False, separators=(",", ":")),
+                            json.dumps(normalize_reminder_days(record.get("reminder_days")), separators=(",", ":")),
+                            clean_text(record.get("updated_at")) or now,
+                        ),
+                    )
+            return
+
+        if dataset == "notification_clients":
+            conn.execute("DELETE FROM notification_clients")
+            if isinstance(value, dict):
+                for phone_key, record in value.items():
+                    if not isinstance(record, dict):
+                        continue
+                    conn.execute(
+                        """
+                        INSERT INTO notification_clients
+                            (phone_key, telefone, login, vencimento, plano, link_pagamento, revenda, payload_json, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            clean_text(phone_key),
+                            clean_text(record.get("telefone")),
+                            clean_text(record.get("login")),
+                            clean_text(record.get("vencimento")),
+                            clean_text(record.get("plano")),
+                            clean_text(record.get("link_pagamento")),
+                            clean_text(record.get("revenda")),
+                            json.dumps(record, ensure_ascii=False, separators=(",", ":")),
+                            clean_text(record.get("updated_at")) or now,
+                        ),
+                    )
+            return
+
+        if dataset == "sent_reminders":
+            conn.execute("DELETE FROM sent_reminders")
+            if isinstance(value, dict):
+                conn.executemany(
+                    "INSERT INTO sent_reminders (reminder_key, sent_at) VALUES (?, ?)",
+                    [(clean_text(key), clean_text(sent_at)) for key, sent_at in value.items() if clean_text(key)],
+                )
+            return
+
+        if dataset == "support_contacts":
+            conn.execute("DELETE FROM support_contacts")
+            if not isinstance(value, dict):
+                return
+            default_number = normalize_whatsapp_number(value.get("default"))
+            conn.execute(
+                "INSERT INTO support_contacts (contact_key, contact_type, whatsapp, updated_at) VALUES (?, ?, ?, ?)",
+                ("default", "official", default_number, now),
+            )
+            reseller_contacts = value.get("revendas")
+            if isinstance(reseller_contacts, dict):
+                for key, number in reseller_contacts.items():
+                    conn.execute(
+                        "INSERT INTO support_contacts (contact_key, contact_type, whatsapp, updated_at) VALUES (?, ?, ?, ?)",
+                        (clean_text(key), "reseller", normalize_whatsapp_number(number), now),
+                    )
+
+
+def mirror_legacy_json_files_to_database() -> None:
+    datasets = (
+        ("push_subscriptions", SUBSCRIPTIONS_FILE),
+        ("notification_clients", CLIENTS_FILE),
+        ("sent_reminders", SENT_REMINDERS_FILE),
+        ("support_contacts", SUPPORT_CONTACTS_FILE),
+    )
+    for dataset, path in datasets:
+        mirror_json_dataset_to_database(dataset, read_json_file(path, {}))
+
+
 def normalize_whatsapp_number(value: Any) -> str:
     digits = only_digits(value)
     if len(digits) in (10, 11):
@@ -947,6 +1083,7 @@ def save_official_support_whatsapp(value: Any) -> str:
             config = {}
         config["default"] = number
         write_json_file(SUPPORT_CONTACTS_FILE, config)
+    mirror_json_dataset_to_database("support_contacts", config)
     return number
 
 
@@ -1017,6 +1154,7 @@ def save_notification_client(cliente: dict[str, Any]) -> None:
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
     write_json_file(CLIENTS_FILE, clients)
+    mirror_json_dataset_to_database("notification_clients", clients)
 
 
 def send_push(subscription: dict[str, Any], title: str, body: str, url: str = "/") -> bool:
@@ -1108,6 +1246,7 @@ def check_and_send_reminders() -> dict[str, int]:
             stats["skipped"] += 1
 
     write_json_file(SENT_REMINDERS_FILE, sent)
+    mirror_json_dataset_to_database("sent_reminders", sent)
     return stats
 
 
@@ -1417,6 +1556,7 @@ def inscrever_notificacoes(request: NotificationSubscriptionRequest) -> dict[str
     for key_candidate in phone_lookup_keys(phone, request.cliente.get("telefone"), request.cliente.get("login")):
         subscriptions[key_candidate] = subscription_record
     write_json_file(SUBSCRIPTIONS_FILE, subscriptions)
+    mirror_json_dataset_to_database("push_subscriptions", subscriptions)
     test_sent = send_push(
         request.subscription,
         "Mega App: notificações ativadas",

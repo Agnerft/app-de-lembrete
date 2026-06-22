@@ -296,6 +296,44 @@ class PaymentMatchTests(unittest.TestCase):
 
 
 class ReminderPreferenceTests(unittest.TestCase):
+    def test_legacy_json_files_are_mirrored_to_sqlite(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            database = base / "mirror.sqlite3"
+            subscriptions_file = base / "subscriptions.json"
+            clients_file = base / "clients.json"
+            sent_file = base / "sent.json"
+            contacts_file = base / "contacts.json"
+            app.write_json_file(
+                subscriptions_file,
+                {"5551999999999": {"telefone": "51999999999", "subscription": {"endpoint": "https://push.test"}, "reminder_days": [3, 1]}},
+            )
+            app.write_json_file(
+                clients_file,
+                {"5551999999999": {"telefone": "51999999999", "login": "cliente", "vencimento": "30/06/2026"}},
+            )
+            app.write_json_file(sent_file, {"5551999999999:2026-06-30:3": "2026-06-27T12:00:00+00:00"})
+            app.write_json_file(contacts_file, {"default": "5551999999999", "revendas": {"revenda1": "5551888888888"}})
+
+            with (
+                patch.object(app, "DB_FILE", database),
+                patch.object(app, "SUBSCRIPTIONS_FILE", subscriptions_file),
+                patch.object(app, "CLIENTS_FILE", clients_file),
+                patch.object(app, "SENT_REMINDERS_FILE", sent_file),
+                patch.object(app, "SUPPORT_CONTACTS_FILE", contacts_file),
+            ):
+                app.init_database()
+                with app.db_connect() as connection:
+                    counts = {
+                        table: connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                        for table in ("push_subscriptions", "notification_clients", "sent_reminders", "support_contacts")
+                    }
+
+        self.assertEqual(counts["push_subscriptions"], 1)
+        self.assertEqual(counts["notification_clients"], 1)
+        self.assertEqual(counts["sent_reminders"], 1)
+        self.assertEqual(counts["support_contacts"], 2)
+
     def test_reminder_days_are_normalized(self):
         self.assertEqual(app.normalize_reminder_days([0, 3, 3, 9, "2", 1]), [3, 2, 1, 0])
         self.assertEqual(app.normalize_reminder_days([]), [])
@@ -322,6 +360,7 @@ class ReminderPreferenceTests(unittest.TestCase):
             clients_file = base / "clients.json"
             subscriptions_file = base / "subscriptions.json"
             sent_file = base / "sent.json"
+            database = base / "reminders.sqlite3"
             phone = "5551999999999"
             due_date = (datetime.now() + timedelta(days=3)).strftime("%d/%m/%Y")
             app.write_json_file(clients_file, {phone: {"telefone": phone, "login": "teste", "vencimento": due_date}})
@@ -335,8 +374,10 @@ class ReminderPreferenceTests(unittest.TestCase):
                 patch.object(app, "CLIENTS_FILE", clients_file),
                 patch.object(app, "SUBSCRIPTIONS_FILE", subscriptions_file),
                 patch.object(app, "SENT_REMINDERS_FILE", sent_file),
+                patch.object(app, "DB_FILE", database),
                 patch.object(app, "send_push", return_value=True) as send_push,
             ):
+                app.init_database()
                 skipped = app.check_and_send_reminders()
                 self.assertEqual(skipped["sent"], 0)
                 send_push.assert_not_called()
