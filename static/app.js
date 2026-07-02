@@ -10,6 +10,10 @@ const dueDate = document.getElementById('dueDate');
 const dueStatus = document.getElementById('dueStatus');
 const screens = document.getElementById('screens');
 const plan = document.getElementById('plan');
+const planChangeForm = document.getElementById('planChangeForm');
+const planChangeSelect = document.getElementById('planChangeSelect');
+const planChangeButton = document.getElementById('planChangeButton');
+const planChangeState = document.getElementById('planChangeState');
 const paymentLink = document.getElementById('paymentLink');
 const copyPaymentLink = document.getElementById('copyPaymentLink');
 const togglePasswordButton = document.getElementById('togglePassword');
@@ -267,6 +271,23 @@ function renderAppSlots(cliente) {
   }
 }
 
+function renderPlanChange(cliente) {
+  const plans = Array.isArray(cliente.gestor_planos) ? cliente.gestor_planos : [];
+  const canChange = Boolean(cliente.gestor_configurado && cliente.gestor_external_id && plans.length);
+  planChangeForm.hidden = !canChange;
+  planChangeSelect.replaceChildren();
+  planChangeState.textContent = '';
+  planChangeState.className = 'save-state';
+  if (!canChange) return;
+
+  for (const item of plans) {
+    const option = document.createElement('option');
+    option.value = item.plan_id;
+    option.textContent = item.label;
+    planChangeSelect.append(option);
+  }
+}
+
 async function copyText(text) {
   if (!text) return false;
 
@@ -306,6 +327,7 @@ function renderResult(cliente) {
   screens.textContent = cliente.telas || 'N/A';
   plan.textContent = cliente.plano || 'N/A';
   renderAppSlots(cliente);
+  renderPlanChange(cliente);
   const savedReminderDays = Array.isArray(cliente.lembrete_dias)
     ? cliente.lembrete_dias.map(Number)
     : [3, 2, 1, 0];
@@ -392,6 +414,49 @@ appSlots.addEventListener('change', async (event) => {
     saveState.textContent = 'Erro';
     saveState.className = 'save-state error';
     setMessage(error.message || 'Não foi possível salvar o app.');
+  }
+});
+
+planChangeForm.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  if (!lastCliente) {
+    setMessage('Pesquise o telefone antes de trocar o plano.', 'warning');
+    return;
+  }
+
+  const planId = planChangeSelect.value;
+  if (!planId) return;
+
+  planChangeButton.disabled = true;
+  planChangeState.textContent = 'Enviando...';
+  planChangeState.className = 'save-state saving';
+  try {
+    const response = await fetch('/api/plano/trocar', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        telefone: lastCliente.telefone,
+        login: lastCliente.login,
+        external_id: lastCliente.gestor_external_id,
+        plan_id: planId,
+        access_token: lastAccessToken,
+      }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(data.detail || 'Nao foi possivel trocar o plano.');
+    }
+    lastCliente.plano = data.plano || planChangeSelect.selectedOptions[0]?.textContent || lastCliente.plano;
+    plan.textContent = lastCliente.plano;
+    planChangeState.textContent = 'Salvo';
+    planChangeState.className = 'save-state saved';
+    setMessage('Plano trocado com sucesso.', false);
+  } catch (error) {
+    planChangeState.textContent = 'Erro';
+    planChangeState.className = 'save-state error';
+    setMessage(error.message || 'Nao foi possivel trocar o plano.');
+  } finally {
+    planChangeButton.disabled = false;
   }
 });
 

@@ -13,6 +13,12 @@ const contactsPanel = document.querySelector("#contactsPanel");
 const contactsStatus = document.querySelector("#contactsStatus");
 const officialForm = document.querySelector("#officialForm");
 const officialWhatsapp = document.querySelector("#officialWhatsapp");
+const gestorPanel = document.querySelector("#gestorPanel");
+const gestorState = document.querySelector("#gestorState");
+const gestorStatus = document.querySelector("#gestorStatus");
+const gestorSearch = document.querySelector("#gestorSearch");
+const gestorCount = document.querySelector("#gestorCount");
+const gestorList = document.querySelector("#gestorList");
 const syncResellersButton = document.querySelector("#syncResellers");
 const resellerSearch = document.querySelector("#resellerSearch");
 const resellerCount = document.querySelector("#resellerCount");
@@ -21,6 +27,7 @@ const resellerList = document.querySelector("#resellerList");
 let enabled = false;
 let pollTimer = null;
 let resellers = [];
+let gestorResellers = [];
 
 function setStatus(text, isError = false) {
   statusMessage.textContent = text;
@@ -30,6 +37,11 @@ function setStatus(text, isError = false) {
 function setContactsStatus(text, isError = false) {
   contactsStatus.textContent = text;
   contactsStatus.classList.toggle("error", isError);
+}
+
+function setGestorStatus(text, isError = false) {
+  gestorStatus.textContent = text;
+  gestorStatus.classList.toggle("error", isError);
 }
 
 async function adminFetch(path, options = {}) {
@@ -90,6 +102,14 @@ function renderState(payload) {
   renderEvents(payload.events || []);
 }
 
+function renderGestor(payload) {
+  gestorResellers = payload.revendas || [];
+  const configured = Number(payload.configured_total) || gestorResellers.filter((item) => item.gestor_configurado).length;
+  gestorState.textContent = `${configured} ${configured === 1 ? "configurado" : "configurados"}`;
+  gestorState.classList.toggle("off", configured === 0);
+  renderGestorResellers();
+}
+
 function resellerMatches(reseller, query) {
   const normalized = query.trim().toLocaleLowerCase("pt-BR");
   return !normalized || `${reseller.nome} ${reseller.username}`.toLocaleLowerCase("pt-BR").includes(normalized);
@@ -138,11 +158,58 @@ function renderResellers() {
   }
 }
 
+function renderGestorResellers() {
+  const visible = gestorResellers.filter((reseller) => resellerMatches(reseller, gestorSearch.value));
+  gestorList.replaceChildren();
+  gestorCount.textContent = `${visible.length} de ${gestorResellers.length}`;
+
+  if (!visible.length) {
+    const empty = document.createElement("p");
+    empty.className = "empty";
+    empty.textContent = gestorResellers.length ? "Nenhuma revenda encontrada." : "Nenhuma revenda cadastrada.";
+    gestorList.append(empty);
+    return;
+  }
+
+  for (const reseller of visible) {
+    const row = document.createElement("form");
+    row.className = "reseller-row gestor-row";
+    row.dataset.username = reseller.username;
+
+    const identity = document.createElement("div");
+    identity.className = "reseller-identity";
+    const name = document.createElement("strong");
+    name.textContent = reseller.nome;
+    const details = document.createElement("span");
+    details.textContent = `${reseller.username} · ${reseller.gestor_configurado ? "Bearer configurado" : "sem Bearer"}`;
+    identity.append(name, details);
+
+    const input = document.createElement("input");
+    input.type = "password";
+    input.autocomplete = "off";
+    input.spellcheck = false;
+    input.placeholder = reseller.gestor_configurado ? "Novo Bearer para substituir" : "Bearer do Gestor";
+    input.setAttribute("aria-label", `Bearer do Gestor de ${reseller.nome}`);
+
+    const button = document.createElement("button");
+    button.type = "submit";
+    button.className = "secondary compact";
+    button.textContent = "Salvar";
+    row.append(identity, input, button);
+    gestorList.append(row);
+  }
+}
+
 async function loadContacts() {
   const payload = await adminFetch("/api/admin/contatos");
   officialWhatsapp.value = payload.oficial || "";
   resellers = payload.revendas || [];
   renderResellers();
+}
+
+async function loadGestor() {
+  const payload = await adminFetch("/api/admin/gestor");
+  renderGestor(payload);
 }
 
 async function refresh() {
@@ -161,11 +228,13 @@ connectButton.addEventListener("click", async () => {
     return;
   }
   try {
-    const [audit, contacts] = await Promise.all([
+    const [audit, contacts, gestor] = await Promise.all([
       adminFetch("/api/admin/auditoria"),
       adminFetch("/api/admin/contatos"),
+      adminFetch("/api/admin/gestor"),
     ]);
     renderState(audit);
+    renderGestor(gestor);
     officialWhatsapp.value = contacts.oficial || "";
     resellers = contacts.revendas || [];
     renderResellers();
@@ -184,6 +253,7 @@ adminTabs.addEventListener("click", (event) => {
   if (!button) return;
   for (const tab of adminTabs.querySelectorAll("[data-panel]")) tab.classList.toggle("active", tab === button);
   contactsPanel.hidden = button.dataset.panel !== "contactsPanel";
+  gestorPanel.hidden = button.dataset.panel !== "gestorPanel";
   auditPanel.hidden = button.dataset.panel !== "auditPanel";
 });
 
@@ -229,6 +299,7 @@ resellerList.addEventListener("submit", async (event) => {
 });
 
 resellerSearch.addEventListener("input", renderResellers);
+gestorSearch.addEventListener("input", renderGestorResellers);
 
 syncResellersButton.addEventListener("click", async () => {
   syncResellersButton.disabled = true;
@@ -241,6 +312,30 @@ syncResellersButton.addEventListener("click", async () => {
     setContactsStatus(error.message, true);
   } finally {
     syncResellersButton.disabled = false;
+  }
+});
+
+gestorList.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const row = event.target.closest(".gestor-row");
+  if (!row) return;
+  const input = row.querySelector("input");
+  const button = row.querySelector("button");
+  button.disabled = true;
+  try {
+    const payload = await adminFetch(`/api/admin/gestor/revendas/${encodeURIComponent(row.dataset.username)}`, {
+      method: "PUT",
+      body: JSON.stringify({bearer: input.value}),
+    });
+    input.value = "";
+    const reseller = gestorResellers.find((item) => item.username === row.dataset.username);
+    if (reseller) reseller.gestor_configurado = payload.configured;
+    renderGestor({revendas: gestorResellers});
+    setGestorStatus(`Bearer de ${reseller?.nome || row.dataset.username} ${payload.configured ? "salvo" : "removido"}.`);
+  } catch (error) {
+    setGestorStatus(error.message, true);
+  } finally {
+    button.disabled = false;
   }
 });
 

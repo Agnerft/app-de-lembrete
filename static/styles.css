@@ -810,6 +810,7 @@ select:focus {
 
 .result-panel.is-visible .result-row,
 .result-panel.is-visible .app-preference,
+.result-panel.is-visible .plan-change,
 .result-panel.is-visible .payment-row,
 .result-panel.is-visible .reminder-section,
 .result-panel.is-visible .reminder-button {
@@ -820,6 +821,7 @@ select:focus {
 .result-panel.is-visible .result-row:nth-child(3) { animation-delay: 0.08s; }
 .result-panel.is-visible .result-row:nth-child(4) { animation-delay: 0.12s; }
 .result-panel.is-visible .result-row:nth-child(5) { animation-delay: 0.16s; }
+.result-panel.is-visible .plan-change { animation-delay: 0.17s; }
 .result-panel.is-visible .app-preference { animation-delay: 0.18s; }
 .result-panel.is-visible .payment-row { animation-delay: 0.2s; }
 .result-panel.is-visible .reminder-button { animation-delay: 0.24s; }
@@ -1039,6 +1041,16 @@ dd {
   gap: 10px;
 }
 
+.plan-change {
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid rgba(142, 247, 255, 0.12);
+  border-radius: 14px;
+  background: rgba(3, 12, 26, 0.16);
+  display: grid;
+  gap: 9px;
+}
+
 .reminder-section {
   margin-top: 12px;
   padding: 14px;
@@ -1048,11 +1060,65 @@ dd {
 }
 
 .app-preference-head,
+.plan-change-head,
 .app-slot-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 14px;
+}
+
+.plan-change h3 {
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.2;
+}
+
+.plan-change-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.plan-change .app-preference-kicker {
+  margin-bottom: 2px;
+  color: rgba(142, 247, 255, 0.78);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+}
+
+.plan-change select {
+  min-height: 40px;
+  border-radius: 10px;
+  background: rgba(4, 11, 24, 0.42);
+  font-size: 13px;
+  font-weight: 760;
+}
+
+.plan-change select option {
+  font-size: 16px;
+  font-weight: 800;
+}
+
+.plan-change .copy-payment-button {
+  min-height: 40px;
+  padding: 0 13px;
+  border-radius: 10px;
+  background: rgba(21, 199, 216, 0.055);
+  font-size: 13px;
+  box-shadow: none;
+}
+
+.plan-change .copy-payment-button svg {
+  width: 15px;
+  height: 15px;
+}
+
+.plan-change .save-state {
+  min-width: 46px;
+  font-size: 12px;
+  font-weight: 780;
 }
 
 .app-preference-kicker {
@@ -1734,6 +1800,10 @@ dd {
     border-radius: 16px;
   }
 
+  .plan-change-controls {
+    grid-template-columns: 1fr;
+  }
+
   .community-panel {
     padding: 16px;
     border-radius: 16px;
@@ -1799,6 +1869,21 @@ dd {
     justify-content: flex-start;
     overflow-wrap: anywhere;
     gap: 8px;
+  }
+
+  #plan {
+    font-size: 13px;
+    line-height: 1.18;
+    font-weight: 850;
+  }
+
+  .plan-change select {
+    font-size: 13px;
+  }
+
+  .plan-change select option {
+    font-size: 16px;
+    line-height: 1.35;
   }
 
   .payment-button { width: 100%; }

@@ -47,6 +47,7 @@ load_env_file()
 API_KEY = os.getenv("PAINEL_BEST_API_KEY", "")
 API_BASE_URL = os.getenv("PAINEL_BEST_BASE_URL", "https://api.painel.best/lines/")
 PAGAMENTO_BUSCAR_URL = os.getenv("PAGAMENTO_BUSCAR_URL", "http://191.252.182.241:8080/buscar")
+GESTOR_CLIENT_URL = os.getenv("GESTOR_CLIENT_URL", "https://app.gestorinove.com.br/api/client")
 VAPID_PUBLIC_KEY = os.getenv("VAPID_PUBLIC_KEY", "")
 VAPID_PRIVATE_KEY = os.getenv("VAPID_PRIVATE_KEY", "").replace("\\n", "\n")
 APP_PUBLIC_URL = os.getenv("APP_PUBLIC_URL", "https://acesso.megaapp.tech").rstrip("/")
@@ -86,6 +87,13 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
 )
 LOGGER = logging.getLogger("mega_app")
+
+GESTOR_PLANS = {
+    "13": {"slug": "mensal", "nome": "mensal", "valor": "R$ 29,90"},
+    "14": {"slug": "bimestral", "nome": "bimestral", "valor": "R$ 49,90"},
+    "15": {"slug": "trimestral", "nome": "trimestral", "valor": "R$ 74,90"},
+    "16": {"slug": "semestral", "nome": "semestral", "valor": "R$ 149,90"},
+}
 
 app = FastAPI(title="Lembrete de Vencimento")
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=ALLOWED_HOSTS)
@@ -152,6 +160,18 @@ class AdminAuditToggleRequest(BaseModel):
 
 class AdminSupportContactRequest(BaseModel):
     whatsapp: str = ""
+
+
+class AdminGestorConfigRequest(BaseModel):
+    bearer: str = ""
+
+
+class PlanChangeRequest(BaseModel):
+    plan_id: str
+    external_id: str | None = None
+    telefone: str | None = None
+    login: str | None = None
+    access_token: str | None = None
 
 
 class CommunityRequest(BaseModel):
@@ -480,6 +500,7 @@ def init_database() -> None:
                 username TEXT NOT NULL UNIQUE,
                 display_name TEXT NOT NULL DEFAULT '',
                 support_whatsapp TEXT NOT NULL DEFAULT '',
+                gestor_bearer TEXT NOT NULL DEFAULT '',
                 line_count INTEGER NOT NULL DEFAULT 0,
                 active_line_count INTEGER NOT NULL DEFAULT 0,
                 first_seen_at TEXT NOT NULL,
@@ -488,6 +509,12 @@ def init_database() -> None:
             )
             """
         )
+        reseller_columns = {
+            clean_text(row["name"])
+            for row in conn.execute("PRAGMA table_info(resellers)").fetchall()
+        }
+        if "gestor_bearer" not in reseller_columns:
+            conn.execute("ALTER TABLE resellers ADD COLUMN gestor_bearer TEXT NOT NULL DEFAULT ''")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_resellers_username ON resellers(username)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_resellers_source_user_id ON resellers(source_user_id)")
         conn.execute(
@@ -622,6 +649,43 @@ def init_database() -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_client_lines_reseller ON client_lines(user_username)")
 
     import_legacy_data_once()
+
+
+def get_meta_value(key: str) -> str:
+    with DB_LOCK, db_connect() as conn:
+        row = conn.execute("SELECT value FROM app_schema_meta WHERE key = ?", (key,)).fetchone()
+    return clean_text(row["value"]) if row else ""
+
+
+def set_meta_value(key: str, value: Any) -> str:
+    cleaned = clean_text(value)
+    with DB_LOCK, db_connect() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO app_schema_meta (key, value) VALUES (?, ?)",
+            (key, cleaned),
+        )
+    return cleaned
+
+
+def normalize_bearer_token(value: Any) -> str:
+    token = clean_text(value)
+    if token.lower().startswith("bearer "):
+        token = token.split(" ", 1)[1].strip()
+    return token
+
+
+def gestor_plan_label(plan_id: Any) -> str:
+    plan = GESTOR_PLANS.get(clean_text(plan_id))
+    if not plan:
+        return ""
+    return f"Consultoria {plan['nome']} - {plan['valor']}"
+
+
+def gestor_plan_options() -> list[dict[str, str]]:
+    return [
+        {"plan_id": plan_id, "label": gestor_plan_label(plan_id), **plan}
+        for plan_id, plan in GESTOR_PLANS.items()
+    ]
 
 
 def normalize_device_id(value: Any) -> str:
@@ -1136,7 +1200,7 @@ def list_admin_support_contacts() -> dict[str, Any]:
             placeholders = ",".join("?" for _ in allowed_names)
             rows = conn.execute(
                 f"""
-                SELECT username, display_name, support_whatsapp, line_count, active_line_count
+                SELECT username, display_name, support_whatsapp, gestor_bearer, line_count, active_line_count
                 FROM resellers
                 WHERE username IN ({placeholders})
                 ORDER BY display_name COLLATE NOCASE, username COLLATE NOCASE
@@ -1146,7 +1210,7 @@ def list_admin_support_contacts() -> dict[str, Any]:
         else:
             rows = conn.execute(
                 """
-                SELECT username, display_name, support_whatsapp, line_count, active_line_count
+                SELECT username, display_name, support_whatsapp, gestor_bearer, line_count, active_line_count
                 FROM resellers
                 ORDER BY display_name COLLATE NOCASE, username COLLATE NOCASE
                 """
@@ -1159,6 +1223,7 @@ def list_admin_support_contacts() -> dict[str, Any]:
                 "username": clean_text(row["username"]),
                 "nome": clean_text(row["display_name"]) or clean_text(row["username"]),
                 "whatsapp": normalize_whatsapp_number(row["support_whatsapp"]),
+                "gestor_configurado": bool(clean_text(row["gestor_bearer"])),
                 "linhas": int(row["line_count"] or 0),
                 "linhas_ativas": int(row["active_line_count"] or 0),
             }
@@ -1195,6 +1260,87 @@ def save_reseller_support_whatsapp(username: Any, value: Any) -> str:
         if result.rowcount != 1:
             raise HTTPException(status_code=404, detail="Revenda não encontrada.")
     return number
+
+
+def get_reseller_gestor_bearer(revenda: Any) -> str:
+    revenda_key = normalize_key(revenda)
+    if not revenda_key:
+        return ""
+    with DB_LOCK, db_connect() as conn:
+        try:
+            rows = conn.execute("SELECT username, display_name, gestor_bearer FROM resellers").fetchall()
+        except sqlite3.OperationalError:
+            return ""
+    for row in rows:
+        if normalize_key(row["username"]) == revenda_key or normalize_key(row["display_name"]) == revenda_key:
+            return clean_text(row["gestor_bearer"])
+    return ""
+
+
+def reseller_gestor_configured(revenda: Any) -> bool:
+    return bool(get_reseller_gestor_bearer(revenda))
+
+
+def gestor_config_status() -> dict[str, Any]:
+    payload = list_admin_support_contacts()
+    configured = sum(1 for reseller in payload["revendas"] if reseller.get("gestor_configurado"))
+    return {"configured": configured > 0, "configured_total": configured, "revendas": payload["revendas"]}
+
+
+def save_gestor_bearer(username: Any, value: Any) -> dict[str, Any]:
+    reseller = clean_text(username)
+    token = normalize_bearer_token(value)
+    with DB_LOCK, db_connect() as conn:
+        result = conn.execute(
+            "UPDATE resellers SET gestor_bearer = ?, updated_at = ? WHERE username = ?",
+            (token, datetime.now(timezone.utc).isoformat(), reseller),
+        )
+        if result.rowcount != 1:
+            raise HTTPException(status_code=404, detail="Revenda nao encontrada.")
+    return {"username": reseller, "configured": bool(token)}
+
+
+def change_gestor_client_plan(plan_id: Any, external_id: Any, revenda: Any) -> dict[str, Any]:
+    plan_id_clean = clean_text(plan_id)
+    external_id_clean = clean_text(external_id)
+    revenda_clean = clean_text(revenda)
+    if plan_id_clean not in GESTOR_PLANS:
+        raise HTTPException(status_code=400, detail="Plano informado nao e valido.")
+    if not external_id_clean:
+        raise HTTPException(status_code=400, detail="Cliente sem external_id da The Best.")
+
+    bearer = get_reseller_gestor_bearer(revenda_clean)
+    if not bearer:
+        raise HTTPException(status_code=503, detail="Bearer do Gestor nao configurado para esta revenda.")
+
+    try:
+        response = requests.patch(
+            GESTOR_CLIENT_URL,
+            headers={
+                "Authorization": f"Bearer {bearer}",
+                "Content-Type": "application/json",
+            },
+            json={"plan_id": plan_id_clean, "external_id": external_id_clean},
+            timeout=30,
+        )
+    except requests.RequestException as exc:
+        raise HTTPException(status_code=503, detail="Nao foi possivel falar com o Gestor agora.") from exc
+
+    if response.status_code >= 400:
+        detail = "Gestor recusou a troca de plano."
+        try:
+            payload = response.json()
+            detail = clean_text(payload.get("message") or payload.get("detail") or detail)
+        except (ValueError, AttributeError):
+            detail = clean_text(response.text) or detail
+        raise HTTPException(status_code=502, detail=detail)
+
+    return {
+        "status": "sucesso",
+        "plan_id": plan_id_clean,
+        "plano": gestor_plan_label(plan_id_clean),
+        "revenda": revenda_clean,
+    }
 
 
 def reminder_key(phone: str, due_date: datetime, days_left: int) -> str:
@@ -2008,6 +2154,22 @@ def salvar_contato_revenda_admin(
     return {"status": "sucesso", "whatsapp": save_reseller_support_whatsapp(username, request.whatsapp)}
 
 
+@app.get("/api/admin/gestor")
+def consultar_gestor_admin(authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    require_admin_token(authorization)
+    return {"status": "sucesso", **gestor_config_status()}
+
+
+@app.put("/api/admin/gestor/revendas/{username}")
+def salvar_gestor_admin(
+    username: str,
+    request: AdminGestorConfigRequest,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    require_admin_token(authorization)
+    return {"status": "sucesso", **save_gestor_bearer(username, request.bearer)}
+
+
 @app.post("/api/admin/revendas/sincronizar")
 def sincronizar_revendas_admin(authorization: str | None = Header(default=None)) -> dict[str, Any]:
     require_admin_token(authorization)
@@ -2020,6 +2182,21 @@ def sincronizar_revendas_admin(authorization: str | None = Header(default=None))
 @app.post("/api/pix")
 def copiar_pix(request: PixRequest) -> dict[str, str]:
     return {"pix": fetch_pix_code(clean_text(request.link))}
+
+
+@app.post("/api/plano/trocar")
+def trocar_plano_cliente(request: PlanChangeRequest) -> dict[str, Any]:
+    require_access_token(request.access_token, request.telefone, request.login)
+    line = search_line_data(request.telefone or request.login or "")
+    external_id = clean_text(
+        line.get("client_id")
+        or line.get("customer_id")
+        or line.get("line_id")
+        or line.get("id")
+        or request.external_id
+    )
+    revenda = clean_text(line.get("user_username"))
+    return change_gestor_client_plan(request.plan_id, external_id, revenda)
 
 
 @app.post("/api/cliente")
@@ -2069,12 +2246,18 @@ def consultar_cliente(request: PhoneRequest, http_request: Request) -> JSONRespo
         line.get("id"),
         payment.get("DT_RowId"),
     )
+    revenda = clean_text(payment.get("Revenda")) or clean_text(line.get("user_username"))
+    gestor_revenda = clean_text(line.get("user_username")) or revenda
 
     cliente = {
         "login": clean_text(line.get("username")) or clean_text(payment.get("nome")) or telefone,
         "senha": clean_text(line.get("password")) or "N/A",
         "telefone": clean_text(payment.get("telefone")) or clean_text(line.get("phone")) or telefone,
         "plano": clean_text(payment.get("plano")) or clean_text(line.get("plan_name")) or clean_text(line.get("type")) or "N/A",
+        "gestor_external_id": clean_text(line.get("client_id") or line.get("customer_id") or line.get("line_id") or line.get("id")),
+        "gestor_revenda": gestor_revenda,
+        "gestor_planos": gestor_plan_options(),
+        "gestor_configurado": reseller_gestor_configured(gestor_revenda),
         "telas": clean_text(line.get("max_connections")) or clean_text(line.get("connections")) or "N/A",
         "vencimento": vencimento or "N/A",
         "status_vencimento": due_status(vencimento),
@@ -2084,7 +2267,7 @@ def consultar_cliente(request: PhoneRequest, http_request: Request) -> JSONRespo
         "status_the_best": clean_text(line.get("status")) or "N/A",
         "conta_ativa_the_best": bool(line.get("is_enabled")) if line else None,
         "link_pagamento": link,
-        "revenda": clean_text(payment.get("Revenda")) or clean_text(line.get("user_username")),
+        "revenda": revenda,
         "clouddy_acesso": clouddy_acesso,
     }
     cliente["suporte"] = support_contact_for_reseller(

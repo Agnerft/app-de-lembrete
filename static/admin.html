@@ -6,7 +6,7 @@
   <meta name="robots" content="noindex, nofollow">
   <title>Mega App - Administracao</title>
   <link rel="icon" href="/static/assets/favicon.ico" sizes="any">
-  <link rel="stylesheet" href="/static/admin.css?v=3">
+  <link rel="stylesheet" href="/static/admin.css?v=4">
 </head>
 <body>
   <main class="admin-shell">
@@ -28,6 +28,7 @@
 
     <nav class="admin-tabs" id="adminTabs" aria-label="Areas administrativas" hidden>
       <button class="tab-button active" type="button" data-panel="contactsPanel">Contatos das revendas</button>
+      <button class="tab-button" type="button" data-panel="gestorPanel">Gestor</button>
       <button class="tab-button" type="button" data-panel="auditPanel">Auditoria</button>
     </nav>
 
@@ -59,6 +60,27 @@
       </div>
     </section>
 
+    <section class="card admin-panel" id="gestorPanel" aria-labelledby="gestorTitle" hidden>
+      <div class="section-head">
+        <div>
+          <h2 id="gestorTitle">Integração Gestor</h2>
+          <p>Salve o Bearer de cada revenda para trocar o plano do cliente pelo card de consulta.</p>
+        </div>
+        <span id="gestorState" class="summary off">0 configurados</span>
+      </div>
+
+      <div class="reseller-toolbar">
+        <label class="search-label" for="gestorSearch">Buscar revenda</label>
+        <input id="gestorSearch" type="search" placeholder="Nome ou usuario da revenda">
+        <span id="gestorCount" class="count-label"></span>
+      </div>
+      <p id="gestorStatus" class="status" role="status"></p>
+      <div id="gestorList" class="reseller-list">
+        <p class="empty">Carregando revendas...</p>
+      </div>
+      <p class="hint">Pode colar com ou sem a palavra Bearer.</p>
+    </section>
+
     <section class="card admin-panel" id="auditPanel" aria-labelledby="auditTitle" hidden>
       <div class="section-head">
         <div>
@@ -81,6 +103,6 @@
       </div>
     </section>
   </main>
-  <script src="/static/admin.js?v=3" defer></script>
+  <script src="/static/admin.js?v=4" defer></script>
 </body>
 </html>

@@ -183,6 +183,59 @@ class AdminSupportContactsTests(unittest.TestCase):
         self.assertNotIn("Revenda:", message)
 
 
+class GestorPlanTests(unittest.TestCase):
+    def test_bearer_is_saved_per_reseller_without_prefix(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "gestor.sqlite3"
+            with patch.object(app, "DB_FILE", database):
+                app.init_database()
+                now = datetime.now().isoformat()
+                with app.db_connect() as connection:
+                    connection.execute(
+                        """
+                        INSERT INTO resellers
+                            (username, display_name, first_seen_at, last_seen_at, updated_at)
+                        VALUES (?, ?, ?, ?, ?)
+                        """,
+                        ("revenda1", "Revenda Um", now, now, now),
+                    )
+                status = app.save_gestor_bearer("revenda1", "Bearer token-123")
+                saved = app.get_reseller_gestor_bearer("Revenda Um")
+
+        self.assertTrue(status["configured"])
+        self.assertEqual(saved, "token-123")
+
+    def test_plan_change_sends_patch_with_reseller_bearer(self):
+        response = SimpleNamespace(status_code=200)
+        response.json = lambda: {"ok": True}
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "gestor.sqlite3"
+            with (
+                patch.object(app, "DB_FILE", database),
+                patch.object(app.requests, "patch", return_value=response) as mocked_patch,
+            ):
+                app.init_database()
+                now = datetime.now().isoformat()
+                with app.db_connect() as connection:
+                    connection.execute(
+                        """
+                        INSERT INTO resellers
+                            (username, display_name, first_seen_at, last_seen_at, updated_at)
+                        VALUES (?, ?, ?, ?, ?)
+                        """,
+                        ("revenda1", "Revenda Um", now, now, now),
+                    )
+                app.save_gestor_bearer("revenda1", "Bearer gestor-token")
+                result = app.change_gestor_client_plan("13", "cliente-456", "Revenda Um")
+
+        self.assertEqual(result["plano"], "Consultoria mensal - R$ 29,90")
+        self.assertEqual(result["revenda"], "Revenda Um")
+        mocked_patch.assert_called_once()
+        _, kwargs = mocked_patch.call_args
+        self.assertEqual(kwargs["headers"]["Authorization"], "Bearer gestor-token")
+        self.assertEqual(kwargs["json"], {"plan_id": "13", "external_id": "cliente-456"})
+
+
 class AppSlotsTests(unittest.TestCase):
     def test_three_apps_are_saved_for_three_screens(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -324,6 +377,59 @@ class PaymentMatchTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(payload["cliente"]["login"], "cliente1")
         self.assertIsNone(payload["cliente"]["link_pagamento"])
+
+    def test_gestor_config_uses_the_best_reseller_over_payment_reseller(self):
+        line = {
+            "id": 985507,
+            "user_username": "tdscr7milgols",
+            "username": "554799746483",
+            "password": "senha1",
+            "phone": "+554799746483",
+            "is_enabled": True,
+            "status": "active",
+        }
+        payment = {
+            "status": "ok",
+            "nome": "554799746483",
+            "telefone": "554799746483",
+            "Revenda": "Gabriel",
+            "Link": "https://pagueaqui.top/exemplo",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "payment.sqlite3"
+            with (
+                patch.object(app, "DB_FILE", database),
+                patch.object(app, "enforce_rate_limit"),
+                patch.object(app, "search_payment_data", return_value=payment),
+                patch.object(app, "search_line_data", return_value=line),
+                patch.object(app, "support_contact_for_reseller", return_value=None),
+                patch.object(app, "get_app_preference", return_value=None),
+                patch.object(app, "get_reminder_days_for_client", return_value=[3, 2, 1, 0]),
+                patch.object(app, "save_notification_client"),
+                patch.object(app, "record_admin_audit_event"),
+                patch.object(app, "ACCESS_TOKEN_SECRET", "test-secret"),
+            ):
+                app.init_database()
+                now = datetime.now().isoformat()
+                with app.db_connect() as connection:
+                    connection.execute(
+                        """
+                        INSERT INTO resellers
+                            (username, display_name, first_seen_at, last_seen_at, updated_at)
+                        VALUES (?, ?, ?, ?, ?)
+                        """,
+                        ("tdscr7milgols", "tdscr7milgols", now, now, now),
+                    )
+                app.save_gestor_bearer("tdscr7milgols", "Bearer token-tds")
+                response = app.consultar_cliente(
+                    app.PhoneRequest(telefone="554799746483"),
+                    SimpleNamespace(),
+                )
+
+        payload = json.loads(response.body)
+        self.assertEqual(payload["cliente"]["revenda"], "Gabriel")
+        self.assertEqual(payload["cliente"]["gestor_revenda"], "tdscr7milgols")
+        self.assertTrue(payload["cliente"]["gestor_configurado"])
 
 
 class ReminderPreferenceTests(unittest.TestCase):

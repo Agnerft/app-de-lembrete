@@ -9,7 +9,7 @@
   <link rel="icon" href="/static/assets/site-icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="/static/assets/site-icon-192.png">
   <link rel="manifest" href="/manifest.webmanifest">
-  <link rel="stylesheet" href="/static/styles.css?v=50">
+  <link rel="stylesheet" href="/static/styles.css?v=53">
 </head>
 <body>
   <div class="stage">
@@ -170,6 +170,23 @@
           </div>
         </dl>
 
+        <form class="plan-change" id="planChangeForm" hidden>
+          <div class="plan-change-head">
+            <div>
+              <span class="app-preference-kicker">Plano</span>
+              <h3>Alterar consultoria</h3>
+            </div>
+            <span class="save-state" id="planChangeState" aria-live="polite"></span>
+          </div>
+          <div class="plan-change-controls">
+            <select id="planChangeSelect" aria-label="Novo plano"></select>
+            <button class="copy-payment-button" id="planChangeButton" type="submit">
+              <span>Alterar</span>
+              <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="m13 6 6 6-6 6"/></svg>
+            </button>
+          </div>
+        </form>
+
         <div class="app-preference">
           <div class="app-preference-head">
             <div>
@@ -230,6 +247,6 @@
     </form>
   </dialog>
 
-  <script src="/static/app.js?v=50"></script>
+  <script src="/static/app.js?v=51"></script>
 </body>
 </html>
