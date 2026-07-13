@@ -1335,12 +1335,66 @@ def change_gestor_client_plan(plan_id: Any, external_id: Any, revenda: Any) -> d
             detail = clean_text(response.text) or detail
         raise HTTPException(status_code=502, detail=detail)
 
+    plan_label = gestor_plan_label(plan_id_clean)
+    update_cached_client_plan(external_id_clean, plan_label)
+
     return {
         "status": "sucesso",
         "plan_id": plan_id_clean,
-        "plano": gestor_plan_label(plan_id_clean),
+        "plano": plan_label,
         "revenda": revenda_clean,
     }
+
+
+def update_cached_client_plan(external_id: Any, plan_label: Any) -> None:
+    external_id_clean = clean_text(external_id)
+    plan_label_clean = clean_text(plan_label)
+    if not external_id_clean or not plan_label_clean:
+        return
+
+    now = datetime.now(timezone.utc).isoformat()
+    with DB_LOCK, db_connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT source_line_id, payload_json
+            FROM client_lines
+            WHERE source_line_id = ? OR payload_json LIKE ?
+            """,
+            (external_id_clean, f'%"{external_id_clean}"%'),
+        ).fetchall()
+
+        for row in rows:
+            try:
+                payload = json.loads(row["payload_json"])
+            except (TypeError, json.JSONDecodeError):
+                payload = {}
+            if not isinstance(payload, dict):
+                payload = {}
+
+            identifiers = {
+                clean_text(payload.get("client_id")),
+                clean_text(payload.get("customer_id")),
+                clean_text(payload.get("line_id")),
+                clean_text(payload.get("id")),
+                clean_text(row["source_line_id"]),
+            }
+            if external_id_clean not in identifiers:
+                continue
+
+            payload["plan_name"] = plan_label_clean
+            conn.execute(
+                """
+                UPDATE client_lines
+                SET plan_name = ?, payload_json = ?, synced_at = ?
+                WHERE source_line_id = ?
+                """,
+                (
+                    plan_label_clean,
+                    json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+                    now,
+                    row["source_line_id"],
+                ),
+            )
 
 
 def reminder_key(phone: str, due_date: datetime, days_left: int) -> str:
@@ -2189,11 +2243,11 @@ def trocar_plano_cliente(request: PlanChangeRequest) -> dict[str, Any]:
     require_access_token(request.access_token, request.telefone, request.login)
     line = search_line_data(request.telefone or request.login or "")
     external_id = clean_text(
-        line.get("client_id")
+        request.external_id
+        or line.get("client_id")
         or line.get("customer_id")
         or line.get("line_id")
         or line.get("id")
-        or request.external_id
     )
     revenda = clean_text(line.get("user_username"))
     return change_gestor_client_plan(request.plan_id, external_id, revenda)
@@ -2249,11 +2303,14 @@ def consultar_cliente(request: PhoneRequest, http_request: Request) -> JSONRespo
     revenda = clean_text(payment.get("Revenda")) or clean_text(line.get("user_username"))
     gestor_revenda = clean_text(line.get("user_username")) or revenda
 
+    line_plan = clean_text(line.get("plan_name")) or clean_text(line.get("type"))
+    payment_plan = clean_text(payment.get("plano"))
+
     cliente = {
         "login": clean_text(line.get("username")) or clean_text(payment.get("nome")) or telefone,
         "senha": clean_text(line.get("password")) or "N/A",
         "telefone": clean_text(payment.get("telefone")) or clean_text(line.get("phone")) or telefone,
-        "plano": clean_text(payment.get("plano")) or clean_text(line.get("plan_name")) or clean_text(line.get("type")) or "N/A",
+        "plano": line_plan or payment_plan or "N/A",
         "gestor_external_id": clean_text(line.get("client_id") or line.get("customer_id") or line.get("line_id") or line.get("id")),
         "gestor_revenda": gestor_revenda,
         "gestor_planos": gestor_plan_options(),

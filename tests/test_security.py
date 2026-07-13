@@ -235,6 +235,92 @@ class GestorPlanTests(unittest.TestCase):
         self.assertEqual(kwargs["headers"]["Authorization"], "Bearer gestor-token")
         self.assertEqual(kwargs["json"], {"plan_id": "13", "external_id": "cliente-456"})
 
+    def test_plan_change_updates_cached_line_plan(self):
+        response = SimpleNamespace(status_code=200)
+        response.json = lambda: {"ok": True}
+        line = {
+            "id": "line-123",
+            "client_id": "cliente-456",
+            "plan_name": "Consultoria mensal - R$ 29,90",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "gestor.sqlite3"
+            with (
+                patch.object(app, "DB_FILE", database),
+                patch.object(app.requests, "patch", return_value=response),
+            ):
+                app.init_database()
+                now = datetime.now().isoformat()
+                with app.db_connect() as connection:
+                    connection.execute(
+                        """
+                        INSERT INTO resellers
+                            (username, display_name, first_seen_at, last_seen_at, updated_at)
+                        VALUES (?, ?, ?, ?, ?)
+                        """,
+                        ("revenda1", "Revenda Um", now, now, now),
+                    )
+                    connection.execute(
+                        """
+                        INSERT INTO client_lines
+                            (source_line_id, phone, phone_key, username, username_key, plan_name, payload_json, synced_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            "line-123", "5551981451949", "5551981451949", "cliente1", "1",
+                            line["plan_name"], json.dumps(line), now,
+                        ),
+                    )
+                app.save_gestor_bearer("revenda1", "Bearer gestor-token")
+                app.change_gestor_client_plan("14", "cliente-456", "Revenda Um")
+                found = app.search_line_data("51981451949")
+
+        self.assertEqual(found["plan_name"], "Consultoria bimestral - R$ 49,90")
+
+    def test_plan_change_route_prefers_request_external_id(self):
+        response = SimpleNamespace(status_code=200)
+        response.json = lambda: {"ok": True}
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "gestor.sqlite3"
+            with (
+                patch.object(app, "DB_FILE", database),
+                patch.object(app, "require_access_token"),
+                patch.object(
+                    app,
+                    "search_line_data",
+                    return_value={
+                        "id": "stale-line-id",
+                        "client_id": "stale-client-id",
+                        "user_username": "Revenda Um",
+                    },
+                ),
+                patch.object(app.requests, "patch", return_value=response) as mocked_patch,
+            ):
+                app.init_database()
+                now = datetime.now().isoformat()
+                with app.db_connect() as connection:
+                    connection.execute(
+                        """
+                        INSERT INTO resellers
+                            (username, display_name, first_seen_at, last_seen_at, updated_at)
+                        VALUES (?, ?, ?, ?, ?)
+                        """,
+                        ("revenda1", "Revenda Um", now, now, now),
+                    )
+                app.save_gestor_bearer("revenda1", "Bearer gestor-token")
+                app.trocar_plano_cliente(
+                    app.PlanChangeRequest(
+                        telefone="51981451949",
+                        login="cliente1",
+                        external_id="cliente-correto",
+                        plan_id="14",
+                        access_token="token",
+                    )
+                )
+
+        _, kwargs = mocked_patch.call_args
+        self.assertEqual(kwargs["json"], {"plan_id": "14", "external_id": "cliente-correto"})
+
 
 class AppSlotsTests(unittest.TestCase):
     def test_three_apps_are_saved_for_three_screens(self):
