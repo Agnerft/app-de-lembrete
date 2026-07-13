@@ -88,6 +88,18 @@ logging.basicConfig(
 )
 LOGGER = logging.getLogger("mega_app")
 
+RESELLER_ALIASES = {
+    "Revenda Guilherme": ["GuiMendes"],
+    "Revenda Alexandre": ["Alexandre01"],
+    "Revenda Bruno": ["brunosoares"],
+    "Revenda David": ["david01"],
+    "Revenda Luccas": ["Luccasdf"],
+    "Revenda Otavio": ["joseotavio"],
+    "Revenda William": ["Williamfarias"],
+    "Revenda Michele": ["MicheliRibeiro"],
+    "Revenda Igor": ["igor01"],
+}
+
 GESTOR_PLANS = {
     "13": {"slug": "mensal", "nome": "mensal", "valor": "R$ 29,90"},
     "14": {"slug": "bimestral", "nome": "bimestral", "valor": "R$ 49,90"},
@@ -189,6 +201,29 @@ def clean_text(value: Any) -> str:
 
 def normalize_key(value: Any) -> str:
     return re.sub(r"[^a-z0-9]+", "", clean_text(value).lower())
+
+
+def base_reseller_lookup_keys(value: Any) -> set[str]:
+    key = normalize_key(value)
+    if not key:
+        return set()
+    keys = {key}
+    if key.startswith("revenda") and len(key) > len("revenda"):
+        keys.add(key[len("revenda"):])
+    return keys
+
+
+def reseller_lookup_keys(value: Any) -> set[str]:
+    keys = base_reseller_lookup_keys(value)
+    if not keys:
+        return set()
+    for canonical, aliases in RESELLER_ALIASES.items():
+        alias_keys = base_reseller_lookup_keys(canonical)
+        for alias in aliases:
+            alias_keys.update(base_reseller_lookup_keys(alias))
+        if keys.intersection(alias_keys):
+            keys.update(alias_keys)
+    return keys
 
 
 def encode_token_part(value: bytes) -> str:
@@ -1263,8 +1298,8 @@ def save_reseller_support_whatsapp(username: Any, value: Any) -> str:
 
 
 def get_reseller_gestor_bearer(revenda: Any) -> str:
-    revenda_key = normalize_key(revenda)
-    if not revenda_key:
+    revenda_keys = reseller_lookup_keys(revenda)
+    if not revenda_keys:
         return ""
     with DB_LOCK, db_connect() as conn:
         try:
@@ -1272,8 +1307,11 @@ def get_reseller_gestor_bearer(revenda: Any) -> str:
         except sqlite3.OperationalError:
             return ""
     for row in rows:
-        if normalize_key(row["username"]) == revenda_key or normalize_key(row["display_name"]) == revenda_key:
-            return clean_text(row["gestor_bearer"])
+        row_keys = reseller_lookup_keys(row["username"]) | reseller_lookup_keys(row["display_name"])
+        if revenda_keys.intersection(row_keys):
+            bearer = clean_text(row["gestor_bearer"])
+            if bearer:
+                return bearer
     return ""
 
 
@@ -1285,6 +1323,14 @@ def gestor_config_status() -> dict[str, Any]:
     payload = list_admin_support_contacts()
     configured = sum(1 for reseller in payload["revendas"] if reseller.get("gestor_configurado"))
     return {"configured": configured > 0, "configured_total": configured, "revendas": payload["revendas"]}
+
+
+def resolve_gestor_reseller(*candidates: Any) -> str:
+    cleaned = [clean_text(candidate) for candidate in candidates if clean_text(candidate)]
+    for candidate in cleaned:
+        if reseller_gestor_configured(candidate):
+            return candidate
+    return cleaned[0] if cleaned else ""
 
 
 def save_gestor_bearer(username: Any, value: Any) -> dict[str, Any]:
@@ -2242,6 +2288,10 @@ def copiar_pix(request: PixRequest) -> dict[str, str]:
 def trocar_plano_cliente(request: PlanChangeRequest) -> dict[str, Any]:
     require_access_token(request.access_token, request.telefone, request.login)
     line = search_line_data(request.telefone or request.login or "")
+    try:
+        payment = search_payment_data(request.telefone or request.login or "") or {}
+    except HTTPException:
+        payment = {}
     external_id = clean_text(
         request.external_id
         or line.get("client_id")
@@ -2249,7 +2299,7 @@ def trocar_plano_cliente(request: PlanChangeRequest) -> dict[str, Any]:
         or line.get("line_id")
         or line.get("id")
     )
-    revenda = clean_text(line.get("user_username"))
+    revenda = resolve_gestor_reseller(line.get("user_username"), payment.get("Revenda"))
     return change_gestor_client_plan(request.plan_id, external_id, revenda)
 
 
@@ -2266,8 +2316,26 @@ def consultar_cliente(request: PhoneRequest, http_request: Request) -> JSONRespo
     with ThreadPoolExecutor(max_workers=2) as executor:
         payment_future = executor.submit(search_payment_data, telefone)
         line_future = executor.submit(search_line_data, telefone)
-        payment = payment_future.result() or {}
-        line = line_future.result() or {}
+        payment_error: HTTPException | None = None
+        line_error: HTTPException | None = None
+        try:
+            payment = payment_future.result() or {}
+        except HTTPException as exc:
+            payment_error = exc
+            payment = {}
+            LOGGER.warning("Payment lookup failed for phone search: %s", exc.detail)
+        try:
+            line = line_future.result() or {}
+        except HTTPException as exc:
+            line_error = exc
+            line = {}
+            LOGGER.warning("Line lookup failed for phone search: %s", exc.detail)
+
+    if payment_error and line_error:
+        raise HTTPException(
+            status_code=503,
+            detail="Nao foi possivel consultar agora. Tente novamente em alguns instantes.",
+        )
 
     if not has_payment_result(payment) and not line:
         reseller = clean_text(line.get("user_username")) if line else ""
@@ -2301,7 +2369,7 @@ def consultar_cliente(request: PhoneRequest, http_request: Request) -> JSONRespo
         payment.get("DT_RowId"),
     )
     revenda = clean_text(payment.get("Revenda")) or clean_text(line.get("user_username"))
-    gestor_revenda = clean_text(line.get("user_username")) or revenda
+    gestor_revenda = resolve_gestor_reseller(line.get("user_username"), revenda)
 
     line_plan = clean_text(line.get("plan_name")) or clean_text(line.get("type"))
     payment_plan = clean_text(payment.get("plano"))

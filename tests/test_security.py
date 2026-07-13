@@ -205,6 +205,62 @@ class GestorPlanTests(unittest.TestCase):
         self.assertTrue(status["configured"])
         self.assertEqual(saved, "token-123")
 
+    def test_bearer_lookup_matches_reseller_name_without_revenda_prefix(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "gestor.sqlite3"
+            with patch.object(app, "DB_FILE", database):
+                app.init_database()
+                now = datetime.now().isoformat()
+                with app.db_connect() as connection:
+                    connection.execute(
+                        """
+                        INSERT INTO resellers
+                            (username, display_name, first_seen_at, last_seen_at, updated_at)
+                        VALUES (?, ?, ?, ?, ?)
+                        """,
+                        ("Junior", "Junior", now, now, now),
+                    )
+                    connection.execute(
+                        """
+                        INSERT INTO resellers
+                            (username, display_name, first_seen_at, last_seen_at, updated_at)
+                        VALUES (?, ?, ?, ?, ?)
+                        """,
+                        ("Revenda Junior", "Revenda Junior", now, now, now),
+                    )
+                app.save_gestor_bearer("Revenda Junior", "Bearer token-junior")
+                saved = app.get_reseller_gestor_bearer("Junior")
+
+        self.assertEqual(saved, "token-junior")
+
+    def test_bearer_lookup_matches_configured_reseller_alias(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "gestor.sqlite3"
+            with patch.object(app, "DB_FILE", database):
+                app.init_database()
+                now = datetime.now().isoformat()
+                with app.db_connect() as connection:
+                    connection.execute(
+                        """
+                        INSERT INTO resellers
+                            (username, display_name, first_seen_at, last_seen_at, updated_at)
+                        VALUES (?, ?, ?, ?, ?)
+                        """,
+                        ("MicheliRibeiro", "MicheliRibeiro", now, now, now),
+                    )
+                    connection.execute(
+                        """
+                        INSERT INTO resellers
+                            (username, display_name, first_seen_at, last_seen_at, updated_at)
+                        VALUES (?, ?, ?, ?, ?)
+                        """,
+                        ("Revenda Michele", "Revenda Michele", now, now, now),
+                    )
+                app.save_gestor_bearer("Revenda Michele", "Bearer token-michele")
+                saved = app.get_reseller_gestor_bearer("MicheliRibeiro")
+
+        self.assertEqual(saved, "token-michele")
+
     def test_plan_change_sends_patch_with_reseller_bearer(self):
         response = SimpleNamespace(status_code=200)
         response.json = lambda: {"ok": True}
@@ -320,6 +376,51 @@ class GestorPlanTests(unittest.TestCase):
 
         _, kwargs = mocked_patch.call_args
         self.assertEqual(kwargs["json"], {"plan_id": "14", "external_id": "cliente-correto"})
+
+    def test_plan_change_route_uses_configured_payment_reseller_when_line_reseller_differs(self):
+        response = SimpleNamespace(status_code=200)
+        response.json = lambda: {"ok": True}
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "gestor.sqlite3"
+            with (
+                patch.object(app, "DB_FILE", database),
+                patch.object(app, "require_access_token"),
+                patch.object(
+                    app,
+                    "search_line_data",
+                    return_value={
+                        "id": "1713617",
+                        "user_username": "Williamfarias",
+                    },
+                ),
+                patch.object(app, "search_payment_data", return_value={"Revenda": "Revenda Junior"}),
+                patch.object(app.requests, "patch", return_value=response) as mocked_patch,
+            ):
+                app.init_database()
+                now = datetime.now().isoformat()
+                with app.db_connect() as connection:
+                    connection.execute(
+                        """
+                        INSERT INTO resellers
+                            (username, display_name, first_seen_at, last_seen_at, updated_at)
+                        VALUES (?, ?, ?, ?, ?)
+                        """,
+                        ("Revenda Junior", "Revenda Junior", now, now, now),
+                    )
+                app.save_gestor_bearer("Revenda Junior", "Bearer token-junior")
+                result = app.trocar_plano_cliente(
+                    app.PlanChangeRequest(
+                        telefone="51981451949",
+                        login="29144975137",
+                        external_id="1713617",
+                        plan_id="14",
+                        access_token="token",
+                    )
+                )
+
+        self.assertEqual(result["revenda"], "Revenda Junior")
+        _, kwargs = mocked_patch.call_args
+        self.assertEqual(kwargs["headers"]["Authorization"], "Bearer token-junior")
 
 
 class AppSlotsTests(unittest.TestCase):
@@ -463,6 +564,87 @@ class PaymentMatchTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(payload["cliente"]["login"], "cliente1")
         self.assertIsNone(payload["cliente"]["link_pagamento"])
+
+    def test_line_is_returned_when_payment_lookup_fails(self):
+        line = {
+            "id": 123,
+            "user_username": "revenda1",
+            "username": "cliente1",
+            "password": "senha1",
+            "phone": "+5527999999999",
+            "is_enabled": True,
+            "status": "active",
+        }
+        with (
+            patch.object(app, "enforce_rate_limit"),
+            patch.object(app, "search_payment_data", side_effect=HTTPException(status_code=503, detail="pagamento fora")),
+            patch.object(app, "search_line_data", return_value=line),
+            patch.object(app, "support_contact_for_reseller", return_value=None),
+            patch.object(app, "get_app_preference", return_value=None),
+            patch.object(app, "get_reminder_days_for_client", return_value=[3, 2, 1, 0]),
+            patch.object(app, "save_notification_client"),
+            patch.object(app, "record_admin_audit_event"),
+            patch.object(app, "ACCESS_TOKEN_SECRET", "test-secret"),
+        ):
+            response = app.consultar_cliente(
+                app.PhoneRequest(telefone="27999999999"),
+                SimpleNamespace(),
+            )
+
+        payload = json.loads(response.body)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(payload["cliente"]["login"], "cliente1")
+
+    def test_line_plan_is_preferred_over_stale_payment_plan(self):
+        line = {
+            "id": 123,
+            "user_username": "revenda1",
+            "username": "cliente1",
+            "password": "senha1",
+            "phone": "+5551981451949",
+            "plan_name": "Consultoria bimestral - R$ 49,90",
+            "is_enabled": True,
+            "status": "active",
+        }
+        payment = {
+            "DT_RowId": "row-123",
+            "nome": "cliente1",
+            "telefone": "51981451949",
+            "plano": "Consultoria mensal - R$ 29,90",
+            "Link": "https://pagueaqui.top/exemplo",
+        }
+        with (
+            patch.object(app, "enforce_rate_limit"),
+            patch.object(app, "search_payment_data", return_value=payment),
+            patch.object(app, "search_line_data", return_value=line),
+            patch.object(app, "support_contact_for_reseller", return_value=None),
+            patch.object(app, "get_app_preference", return_value=None),
+            patch.object(app, "get_reminder_days_for_client", return_value=[3, 2, 1, 0]),
+            patch.object(app, "save_notification_client"),
+            patch.object(app, "record_admin_audit_event"),
+            patch.object(app, "ACCESS_TOKEN_SECRET", "test-secret"),
+        ):
+            response = app.consultar_cliente(
+                app.PhoneRequest(telefone="51981451949"),
+                SimpleNamespace(),
+            )
+
+        payload = json.loads(response.body)
+        self.assertEqual(payload["cliente"]["plano"], "Consultoria bimestral - R$ 49,90")
+
+    def test_unavailable_is_returned_when_both_lookups_fail(self):
+        with (
+            patch.object(app, "enforce_rate_limit"),
+            patch.object(app, "search_payment_data", side_effect=HTTPException(status_code=503, detail="pagamento fora")),
+            patch.object(app, "search_line_data", side_effect=HTTPException(status_code=503, detail="linhas fora")),
+        ):
+            with self.assertRaises(HTTPException) as raised:
+                app.consultar_cliente(
+                    app.PhoneRequest(telefone="27999999999"),
+                    SimpleNamespace(),
+                )
+
+        self.assertEqual(raised.exception.status_code, 503)
 
     def test_gestor_config_uses_the_best_reseller_over_payment_reseller(self):
         line = {
