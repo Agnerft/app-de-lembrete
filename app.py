@@ -184,6 +184,7 @@ class PlanChangeRequest(BaseModel):
     telefone: str | None = None
     login: str | None = None
     access_token: str | None = None
+    current_plan_id: str | None = None
 
 
 class CommunityRequest(BaseModel):
@@ -721,6 +722,17 @@ def gestor_plan_options() -> list[dict[str, str]]:
         {"plan_id": plan_id, "label": gestor_plan_label(plan_id), **plan}
         for plan_id, plan in GESTOR_PLANS.items()
     ]
+
+
+def infer_gestor_plan_id(value: Any) -> str:
+    text = clean_text(value).lower()
+    if not text:
+        return ""
+    for plan_id, plan in GESTOR_PLANS.items():
+        markers = (plan_id, plan["slug"], plan["nome"], plan["valor"].lower(), plan["valor"].replace("R$ ", "").lower())
+        if any(marker and marker in text for marker in markers):
+            return plan_id
+    return ""
 
 
 def normalize_device_id(value: Any) -> str:
@@ -1376,9 +1388,26 @@ def change_gestor_client_plan(plan_id: Any, external_id: Any, revenda: Any) -> d
         detail = "Gestor recusou a troca de plano."
         try:
             payload = response.json()
-            detail = clean_text(payload.get("message") or payload.get("detail") or detail)
+            if isinstance(payload, dict):
+                detail = clean_text(
+                    payload.get("message")
+                    or payload.get("detail")
+                    or payload.get("error")
+                    or payload.get("errors")
+                    or detail
+                )
+            else:
+                detail = clean_text(payload) or detail
         except (ValueError, AttributeError):
             detail = clean_text(response.text) or detail
+        LOGGER.warning(
+            "gestor_plan_change_rejected status=%s plan_id=%s external_id=%s revenda=%s detail=%s",
+            response.status_code,
+            plan_id_clean,
+            external_id_clean,
+            revenda_clean,
+            detail,
+        )
         raise HTTPException(status_code=502, detail=detail)
 
     plan_label = gestor_plan_label(plan_id_clean)
@@ -2292,6 +2321,11 @@ def trocar_plano_cliente(request: PlanChangeRequest) -> dict[str, Any]:
         payment = search_payment_data(request.telefone or request.login or "") or {}
     except HTTPException:
         payment = {}
+    current_plan_id = clean_text(request.current_plan_id) or infer_gestor_plan_id(
+        clean_text(line.get("plan_name")) or clean_text(line.get("type")) or clean_text(payment.get("plano"))
+    )
+    if current_plan_id and current_plan_id == clean_text(request.plan_id):
+        raise HTTPException(status_code=400, detail="Este cliente ja esta nesse plano.")
     external_id = clean_text(
         request.external_id
         or line.get("client_id")
@@ -2373,12 +2407,14 @@ def consultar_cliente(request: PhoneRequest, http_request: Request) -> JSONRespo
 
     line_plan = clean_text(line.get("plan_name")) or clean_text(line.get("type"))
     payment_plan = clean_text(payment.get("plano"))
+    gestor_plan_id = infer_gestor_plan_id(line_plan or payment_plan)
 
     cliente = {
         "login": clean_text(line.get("username")) or clean_text(payment.get("nome")) or telefone,
         "senha": clean_text(line.get("password")) or "N/A",
         "telefone": clean_text(payment.get("telefone")) or clean_text(line.get("phone")) or telefone,
         "plano": line_plan or payment_plan or "N/A",
+        "gestor_plan_id": gestor_plan_id,
         "gestor_external_id": clean_text(line.get("client_id") or line.get("customer_id") or line.get("line_id") or line.get("id")),
         "gestor_revenda": gestor_revenda,
         "gestor_planos": gestor_plan_options(),

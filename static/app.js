@@ -283,8 +283,11 @@ function renderPlanChange(cliente) {
   for (const item of plans) {
     const option = document.createElement('option');
     option.value = item.plan_id;
-    option.textContent = item.label;
+    option.textContent = item.plan_id === cliente.gestor_plan_id ? `${item.label} (atual)` : item.label;
     planChangeSelect.append(option);
+  }
+  if (cliente.gestor_plan_id) {
+    planChangeSelect.value = cliente.gestor_plan_id;
   }
 }
 
@@ -426,6 +429,12 @@ planChangeForm.addEventListener('submit', async (event) => {
 
   const planId = planChangeSelect.value;
   if (!planId) return;
+  if (planId === lastCliente.gestor_plan_id) {
+    setMessage('Esse cliente ja esta nesse plano.', 'warning');
+    planChangeState.textContent = 'Atual';
+    planChangeState.className = 'save-state';
+    return;
+  }
 
   planChangeButton.disabled = true;
   planChangeState.textContent = 'Enviando...';
@@ -439,6 +448,7 @@ planChangeForm.addEventListener('submit', async (event) => {
         login: lastCliente.login,
         external_id: lastCliente.gestor_external_id,
         plan_id: planId,
+        current_plan_id: lastCliente.gestor_plan_id,
         access_token: lastAccessToken,
       }),
     });
@@ -447,7 +457,9 @@ planChangeForm.addEventListener('submit', async (event) => {
       throw new Error(data.detail || 'Nao foi possivel trocar o plano.');
     }
     lastCliente.plano = data.plano || planChangeSelect.selectedOptions[0]?.textContent || lastCliente.plano;
+    lastCliente.gestor_plan_id = data.plan_id || planId;
     plan.textContent = lastCliente.plano;
+    renderPlanChange(lastCliente);
     planChangeState.textContent = 'Salvo';
     planChangeState.className = 'save-state saved';
     setMessage('Plano trocado com sucesso.', false);

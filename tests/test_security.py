@@ -291,6 +291,67 @@ class GestorPlanTests(unittest.TestCase):
         self.assertEqual(kwargs["headers"]["Authorization"], "Bearer gestor-token")
         self.assertEqual(kwargs["json"], {"plan_id": "13", "external_id": "cliente-456"})
 
+    def test_plan_change_rejection_uses_gestor_error_message(self):
+        response = SimpleNamespace(status_code=422, text="")
+        response.json = lambda: {"message": "Plano nao permitido para este cliente."}
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "gestor.sqlite3"
+            with (
+                patch.object(app, "DB_FILE", database),
+                patch.object(app.requests, "patch", return_value=response),
+            ):
+                app.init_database()
+                now = datetime.now().isoformat()
+                with app.db_connect() as connection:
+                    connection.execute(
+                        """
+                        INSERT INTO resellers
+                            (username, display_name, first_seen_at, last_seen_at, updated_at)
+                        VALUES (?, ?, ?, ?, ?)
+                        """,
+                        ("revenda1", "Revenda Um", now, now, now),
+                    )
+                app.save_gestor_bearer("revenda1", "Bearer gestor-token")
+                with self.assertRaises(HTTPException) as raised:
+                    app.change_gestor_client_plan("14", "cliente-456", "Revenda Um")
+
+        self.assertEqual(raised.exception.status_code, 502)
+        self.assertEqual(raised.exception.detail, "Plano nao permitido para este cliente.")
+
+    def test_plan_change_route_rejects_same_plan_before_gestor(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "gestor.sqlite3"
+            with (
+                patch.object(app, "DB_FILE", database),
+                patch.object(app, "require_access_token"),
+                patch.object(
+                    app,
+                    "search_line_data",
+                    return_value={
+                        "id": "1713617",
+                        "user_username": "Revenda Junior",
+                        "plan_name": "Consultoria bimestral - R$ 49,90",
+                    },
+                ),
+                patch.object(app, "search_payment_data", return_value={"Revenda": "Revenda Junior"}),
+                patch.object(app.requests, "patch") as mocked_patch,
+            ):
+                app.init_database()
+                with self.assertRaises(HTTPException) as raised:
+                    app.trocar_plano_cliente(
+                        app.PlanChangeRequest(
+                            telefone="51981451949",
+                            login="29144975137",
+                            external_id="1713617",
+                            plan_id="14",
+                            access_token="token",
+                        )
+                    )
+
+        self.assertEqual(raised.exception.status_code, 400)
+        self.assertEqual(raised.exception.detail, "Este cliente ja esta nesse plano.")
+        mocked_patch.assert_not_called()
+
     def test_plan_change_updates_cached_line_plan(self):
         response = SimpleNamespace(status_code=200)
         response.json = lambda: {"ok": True}
