@@ -1,8 +1,8 @@
-const CACHE_NAME = 'mega-app-v50';
+const CACHE_NAME = 'mega-app-v56';
 const APP_SHELL = [
   '/',
-  '/static/styles.css?v=50',
-  '/static/app.js?v=50',
+  '/static/styles.css?v=53',
+  '/static/app.js?v=56',
   '/static/assets/inter-latin-variable.woff2',
   '/static/assets/mega-nebula-bg.webp',
   '/static/assets/mega-nebula-bg-mobile.webp',
