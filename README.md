@@ -39,6 +39,36 @@ Aplicação web responsiva para consulta de acesso, vencimento e pagamento, com 
 python -m unittest discover -s tests -v
 ```
 
+## Sincronizar com Git e resetar a aplicacao
+
+Quando houver alteracoes locais e voce quiser salvar no Git antes de atualizar a aplicacao com o que esta no remoto:
+
+Comando rapido no Windows/PowerShell:
+
+```powershell
+.\atualizar.ps1
+```
+
+Comando rapido no Linux/VPS:
+
+```bash
+bash atualizar.sh
+```
+
+Linux/VPS:
+
+```bash
+bash scripts/git-sync-reset.sh "mensagem do commit"
+```
+
+Windows/PowerShell:
+
+```powershell
+.\scripts\git-sync-reset.ps1 "mensagem do commit"
+```
+
+O script faz commit das alteracoes locais, envia para `origin/main`, baixa as novidades e executa `git reset --hard origin/main`.
+
 ## Sincronizacao manual
 
 O servico sincroniza automaticamente ao iniciar e a cada 10 minutos. Para executar uma carga manual:

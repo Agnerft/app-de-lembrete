@@ -573,7 +573,12 @@ form.addEventListener('submit', async (event) => {
   } catch (error) {
     resultPanel.hidden = true;
     resultPanel.classList.remove('is-visible');
-    setMessage(error.message || 'Erro inesperado.');
+    const isNetworkError = error instanceof TypeError || /networkerror|failed to fetch/i.test(error.message || '');
+    setMessage(
+      isNetworkError
+        ? 'Nao consegui conectar ao servidor agora. Confira sua internet e tente novamente.'
+        : error.message || 'Erro inesperado.',
+    );
   } finally {
     setLoading(false);
   }
