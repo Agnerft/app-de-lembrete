@@ -595,6 +595,44 @@ class PaymentMatchTests(unittest.TestCase):
 
         self.assertEqual(result, matching)
 
+    def test_payment_is_retried_with_line_phone_when_login_search_misses(self):
+        line = {
+            "id": 123,
+            "user_username": "GuiMendes",
+            "username": "99886446671",
+            "password": "senha1",
+            "phone": "+555181451949",
+            "is_enabled": True,
+            "status": "active",
+        }
+        payment = {
+            "DT_RowId": "row-123",
+            "nome": "555181451949",
+            "telefone": "+5181451949",
+            "Link": "https://pagueaqui.top/exemplo",
+        }
+        with (
+            patch.object(app, "enforce_rate_limit"),
+            patch.object(app, "search_payment_data", side_effect=[None, payment]) as payment_search,
+            patch.object(app, "search_line_data", return_value=line),
+            patch.object(app, "support_contact_for_reseller", return_value=None),
+            patch.object(app, "get_app_preference", return_value=None),
+            patch.object(app, "get_reminder_days_for_client", return_value=[3, 2, 1, 0]),
+            patch.object(app, "save_notification_client"),
+            patch.object(app, "record_admin_audit_event"),
+            patch.object(app, "ACCESS_TOKEN_SECRET", "test-secret"),
+        ):
+            response = app.consultar_cliente(
+                app.PhoneRequest(telefone="99886446671"),
+                SimpleNamespace(),
+            )
+
+        payload = json.loads(response.body)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(payload["cliente"]["link_pagamento"], "https://pagueaqui.top/exemplo")
+        self.assertEqual(payment_search.call_args_list[0].args[0], "99886446671")
+        self.assertEqual(payment_search.call_args_list[1].args[0], "+555181451949")
+
     def test_line_without_payment_is_returned(self):
         line = {
             "id": 123,

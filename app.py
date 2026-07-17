@@ -1772,6 +1772,19 @@ def search_payment_data(phone: str) -> dict[str, Any] | None:
     return None
 
 
+def search_payment_data_for_line(line: dict[str, Any], original_term: str) -> dict[str, Any] | None:
+    tried = {only_digits(original_term)}
+    for candidate in (line.get("phone"), line.get("username")):
+        digits = only_digits(candidate)
+        if not digits or digits in tried:
+            continue
+        tried.add(digits)
+        payment = search_payment_data(clean_text(candidate))
+        if has_payment_result(payment or {}):
+            return payment
+    return None
+
+
 def search_line_data_remote(phone: str) -> dict[str, Any] | None:
     if not API_KEY:
         return None
@@ -2364,6 +2377,12 @@ def consultar_cliente(request: PhoneRequest, http_request: Request) -> JSONRespo
             line_error = exc
             line = {}
             LOGGER.warning("Line lookup failed for phone search: %s", exc.detail)
+
+    if not has_payment_result(payment) and line:
+        try:
+            payment = search_payment_data_for_line(line, telefone) or payment
+        except HTTPException as exc:
+            LOGGER.warning("Payment lookup by line phone failed for phone search: %s", exc.detail)
 
     if payment_error and line_error:
         raise HTTPException(
