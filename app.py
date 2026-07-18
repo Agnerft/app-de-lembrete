@@ -1893,7 +1893,17 @@ def search_line_data_from_database(phone: str) -> dict[str, Any] | None:
 
 def search_line_data(phone: str) -> dict[str, Any] | None:
     local = search_line_data_from_database(phone)
+    if local and line_priority_score(local)[:2] == (1, 1):
+        return local
     if local:
+        try:
+            expiration = int(clean_text(local.get("exp_date")))
+        except ValueError:
+            expiration = 0
+        if expiration and expiration < int(time.time()):
+            remote = search_line_data_remote(phone)
+            if remote:
+                return max([local, remote], key=line_priority_score)
         return local
     return search_line_data_remote(phone)
 

@@ -764,6 +764,31 @@ class PaymentMatchTests(unittest.TestCase):
 
         self.assertEqual(raised.exception.status_code, 503)
 
+    def test_remote_line_replaces_expired_cached_line(self):
+        expired = {
+            "id": "old",
+            "username": "553499789416",
+            "phone": "+553499789416",
+            "exp_date": str(int(datetime(2026, 7, 13, tzinfo=app.timezone.utc).timestamp())),
+            "status": "expired",
+            "is_enabled": True,
+        }
+        active = {
+            "id": "new",
+            "username": "553499789416",
+            "phone": "+553499789416",
+            "exp_date": str(int(datetime(2026, 8, 18, tzinfo=app.timezone.utc).timestamp())),
+            "status": "active",
+            "is_enabled": True,
+        }
+        with (
+            patch.object(app, "search_line_data_from_database", return_value=expired),
+            patch.object(app, "search_line_data_remote", return_value=active),
+        ):
+            line = app.search_line_data("553499789416")
+
+        self.assertEqual(line["id"], "new")
+
     def test_gestor_config_uses_the_best_reseller_over_payment_reseller(self):
         line = {
             "id": 985507,
