@@ -16,6 +16,9 @@ const officialWhatsapp = document.querySelector("#officialWhatsapp");
 const gestorPanel = document.querySelector("#gestorPanel");
 const gestorState = document.querySelector("#gestorState");
 const gestorStatus = document.querySelector("#gestorStatus");
+const gestorPrincipalForm = document.querySelector("#gestorPrincipalForm");
+const gestorPrincipalBearer = document.querySelector("#gestorPrincipalBearer");
+const gestorPrincipalState = document.querySelector("#gestorPrincipalState");
 const gestorSearch = document.querySelector("#gestorSearch");
 const gestorCount = document.querySelector("#gestorCount");
 const gestorList = document.querySelector("#gestorList");
@@ -28,6 +31,7 @@ let enabled = false;
 let pollTimer = null;
 let resellers = [];
 let gestorResellers = [];
+let gestorMainConfigured = false;
 
 function setStatus(text, isError = false) {
   statusMessage.textContent = text;
@@ -105,8 +109,13 @@ function renderState(payload) {
 function renderGestor(payload) {
   gestorResellers = payload.revendas || [];
   const configured = Number(payload.configured_total) || gestorResellers.filter((item) => item.gestor_configurado).length;
-  gestorState.textContent = `${configured} ${configured === 1 ? "configurado" : "configurados"}`;
-  gestorState.classList.toggle("off", configured === 0);
+  if (Object.prototype.hasOwnProperty.call(payload, "principal_configurado")) gestorMainConfigured = Boolean(payload.principal_configurado);
+  const resellerText = `${configured} ${configured === 1 ? "revenda" : "revendas"}`;
+  gestorState.textContent = gestorMainConfigured ? `Principal + ${resellerText}` : `${configured} ${configured === 1 ? "configurado" : "configurados"}`;
+  gestorState.classList.toggle("off", configured === 0 && !gestorMainConfigured);
+  gestorPrincipalState.textContent = gestorMainConfigured
+    ? "Bearer principal configurado. Ele sera usado quando a revenda nao tiver Bearer proprio."
+    : "Usado quando a revenda nao tiver Bearer proprio.";
   renderGestorResellers();
 }
 
@@ -312,6 +321,25 @@ syncResellersButton.addEventListener("click", async () => {
     setContactsStatus(error.message, true);
   } finally {
     syncResellersButton.disabled = false;
+  }
+});
+
+gestorPrincipalForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const button = gestorPrincipalForm.querySelector("button");
+  button.disabled = true;
+  try {
+    const payload = await adminFetch("/api/admin/gestor/principal", {
+      method: "PUT",
+      body: JSON.stringify({bearer: gestorPrincipalBearer.value}),
+    });
+    gestorPrincipalBearer.value = "";
+    renderGestor({...payload, revendas: gestorResellers, configured_total: gestorResellers.filter((item) => item.gestor_configurado).length, principal_configurado: payload.configured});
+    setGestorStatus(`Bearer principal ${payload.configured ? "salvo" : "removido"}.`);
+  } catch (error) {
+    setGestorStatus(error.message, true);
+  } finally {
+    button.disabled = false;
   }
 });
 

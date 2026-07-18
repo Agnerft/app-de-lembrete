@@ -291,6 +291,25 @@ class GestorPlanTests(unittest.TestCase):
         self.assertEqual(kwargs["headers"]["Authorization"], "Bearer gestor-token")
         self.assertEqual(kwargs["json"], {"plan_id": "13", "external_id": "cliente-456"})
 
+    def test_plan_change_uses_main_bearer_when_reseller_has_no_bearer(self):
+        response = SimpleNamespace(status_code=200)
+        response.json = lambda: {"ok": True}
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "gestor.sqlite3"
+            with (
+                patch.object(app, "DB_FILE", database),
+                patch.object(app.requests, "patch", return_value=response) as mocked_patch,
+            ):
+                app.init_database()
+                app.save_main_gestor_bearer("Bearer principal-token")
+                result = app.change_gestor_client_plan("13", "cliente-456", "tdscr7milgols")
+
+        self.assertEqual(result["plano"], "Consultoria mensal - R$ 29,90")
+        self.assertEqual(result["revenda"], "tdscr7milgols")
+        mocked_patch.assert_called_once()
+        _, kwargs = mocked_patch.call_args
+        self.assertEqual(kwargs["headers"]["Authorization"], "Bearer principal-token")
+
     def test_plan_change_rejection_uses_gestor_error_message(self):
         response = SimpleNamespace(status_code=422, text="")
         response.json = lambda: {"message": "Plano nao permitido para este cliente."}

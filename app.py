@@ -69,6 +69,7 @@ PHONE_RATE_LIMIT_WINDOW_SECONDS = int(os.getenv("PHONE_RATE_LIMIT_WINDOW_SECONDS
 ACCESS_TOKEN_TTL_SECONDS = int(os.getenv("ACCESS_TOKEN_TTL_SECONDS", "1800"))
 ACCESS_TOKEN_SECRET = os.getenv("ACCESS_TOKEN_SECRET", "") or API_KEY or VAPID_PRIVATE_KEY
 REMINDER_ADMIN_TOKEN = os.getenv("REMINDER_ADMIN_TOKEN", "")
+GESTOR_MAIN_BEARER_META_KEY = "gestor_main_bearer"
 DATA_SYNC_INTERVAL_SECONDS = max(60, int(os.getenv("DATA_SYNC_INTERVAL_SECONDS", "600")))
 REMINDER_CHECK_INTERVAL_SECONDS = max(60, int(os.getenv("REMINDER_CHECK_INTERVAL_SECONDS", "3600")))
 DATA_SYNC_WORKERS = max(1, int(os.getenv("DATA_SYNC_WORKERS", "8")))
@@ -1311,20 +1312,29 @@ def save_reseller_support_whatsapp(username: Any, value: Any) -> str:
 
 def get_reseller_gestor_bearer(revenda: Any) -> str:
     revenda_keys = reseller_lookup_keys(revenda)
-    if not revenda_keys:
-        return ""
-    with DB_LOCK, db_connect() as conn:
-        try:
-            rows = conn.execute("SELECT username, display_name, gestor_bearer FROM resellers").fetchall()
-        except sqlite3.OperationalError:
-            return ""
-    for row in rows:
-        row_keys = reseller_lookup_keys(row["username"]) | reseller_lookup_keys(row["display_name"])
-        if revenda_keys.intersection(row_keys):
-            bearer = clean_text(row["gestor_bearer"])
-            if bearer:
-                return bearer
-    return ""
+    if revenda_keys:
+        with DB_LOCK, db_connect() as conn:
+            try:
+                rows = conn.execute("SELECT username, display_name, gestor_bearer FROM resellers").fetchall()
+            except sqlite3.OperationalError:
+                rows = []
+        for row in rows:
+            row_keys = reseller_lookup_keys(row["username"]) | reseller_lookup_keys(row["display_name"])
+            if revenda_keys.intersection(row_keys):
+                bearer = clean_text(row["gestor_bearer"])
+                if bearer:
+                    return bearer
+    return get_main_gestor_bearer()
+
+
+def get_main_gestor_bearer() -> str:
+    return get_meta_value(GESTOR_MAIN_BEARER_META_KEY)
+
+
+def save_main_gestor_bearer(value: Any) -> dict[str, Any]:
+    token = normalize_bearer_token(value)
+    set_meta_value(GESTOR_MAIN_BEARER_META_KEY, token)
+    return {"configured": bool(token)}
 
 
 def reseller_gestor_configured(revenda: Any) -> bool:
@@ -1334,7 +1344,13 @@ def reseller_gestor_configured(revenda: Any) -> bool:
 def gestor_config_status() -> dict[str, Any]:
     payload = list_admin_support_contacts()
     configured = sum(1 for reseller in payload["revendas"] if reseller.get("gestor_configurado"))
-    return {"configured": configured > 0, "configured_total": configured, "revendas": payload["revendas"]}
+    main_configured = bool(get_main_gestor_bearer())
+    return {
+        "configured": configured > 0 or main_configured,
+        "configured_total": configured,
+        "principal_configurado": main_configured,
+        "revendas": payload["revendas"],
+    }
 
 
 def resolve_gestor_reseller(*candidates: Any) -> str:
@@ -1369,7 +1385,7 @@ def change_gestor_client_plan(plan_id: Any, external_id: Any, revenda: Any) -> d
 
     bearer = get_reseller_gestor_bearer(revenda_clean)
     if not bearer:
-        raise HTTPException(status_code=503, detail="Bearer do Gestor nao configurado para esta revenda.")
+        raise HTTPException(status_code=503, detail="Bearer do Gestor nao configurado para esta revenda nem para a API principal.")
 
     try:
         response = requests.patch(
@@ -2300,6 +2316,15 @@ def salvar_contato_revenda_admin(
 def consultar_gestor_admin(authorization: str | None = Header(default=None)) -> dict[str, Any]:
     require_admin_token(authorization)
     return {"status": "sucesso", **gestor_config_status()}
+
+
+@app.put("/api/admin/gestor/principal")
+def salvar_gestor_principal_admin(
+    request: AdminGestorConfigRequest,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    require_admin_token(authorization)
+    return {"status": "sucesso", **save_main_gestor_bearer(request.bearer)}
 
 
 @app.put("/api/admin/gestor/revendas/{username}")

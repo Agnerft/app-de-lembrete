@@ -64,10 +64,19 @@
       <div class="section-head">
         <div>
           <h2 id="gestorTitle">Integração Gestor</h2>
-          <p>Salve o Bearer de cada revenda para trocar o plano do cliente pelo card de consulta.</p>
+          <p>Salve o Bearer principal e, se precisar, um Bearer especifico por revenda.</p>
         </div>
         <span id="gestorState" class="summary off">0 configurados</span>
       </div>
+
+      <form id="gestorPrincipalForm" class="official-form">
+        <label for="gestorPrincipalBearer">Bearer principal da API</label>
+        <div class="contact-row">
+          <input id="gestorPrincipalBearer" type="password" autocomplete="off" spellcheck="false" placeholder="Bearer principal do Gestor">
+          <button class="primary" type="submit">Salvar principal</button>
+        </div>
+        <p id="gestorPrincipalState" class="hint">Usado quando a revenda nao tiver Bearer proprio.</p>
+      </form>
 
       <div class="reseller-toolbar">
         <label class="search-label" for="gestorSearch">Buscar revenda</label>
