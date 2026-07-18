@@ -1250,7 +1250,7 @@ def list_admin_support_contacts() -> dict[str, Any]:
                 f"""
                 SELECT username, display_name, support_whatsapp, gestor_bearer, line_count, active_line_count
                 FROM resellers
-                WHERE username IN ({placeholders})
+                WHERE username IN ({placeholders}) OR line_count > 0
                 ORDER BY display_name COLLATE NOCASE, username COLLATE NOCASE
                 """,
                 allowed_names,
