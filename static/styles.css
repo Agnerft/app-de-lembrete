@@ -1353,6 +1353,10 @@ dd {
   transform: none;
 }
 
+.copy-payment-button.pix-copy-disabled:disabled {
+  cursor: not-allowed;
+}
+
 .reminder-preferences {
   min-width: 0;
   margin: 0;

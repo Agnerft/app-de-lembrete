@@ -345,11 +345,19 @@ function renderResult(cliente) {
     paymentLink.href = cliente.link_pagamento;
     paymentLink.hidden = false;
     copyPaymentLink.hidden = false;
+    copyPaymentLink.disabled = true;
+    copyPaymentLink.classList.add('pix-copy-disabled');
+    copyPaymentLink.title = 'Abra o pagamento para consultar o Pix.';
+    copyPaymentLink.setAttribute('aria-label', 'Copiar Pix indisponivel');
     noLink.hidden = true;
   } else {
     paymentLink.href = '#';
     paymentLink.hidden = true;
     copyPaymentLink.hidden = true;
+    copyPaymentLink.disabled = true;
+    copyPaymentLink.classList.remove('pix-copy-disabled');
+    copyPaymentLink.removeAttribute('title');
+    copyPaymentLink.setAttribute('aria-label', 'Copiar Pix');
     noLink.hidden = false;
   }
 
@@ -498,6 +506,8 @@ document.addEventListener('click', async (event) => {
 });
 
 copyPaymentLink.addEventListener('click', async () => {
+  if (copyPaymentLink.disabled) return;
+
   const href = paymentLink.href;
   if (!href || href.endsWith('#')) return;
 
