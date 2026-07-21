@@ -15,7 +15,6 @@ const planChangeSelect = document.getElementById('planChangeSelect');
 const planChangeButton = document.getElementById('planChangeButton');
 const planChangeState = document.getElementById('planChangeState');
 const paymentLink = document.getElementById('paymentLink');
-const copyPaymentLink = document.getElementById('copyPaymentLink');
 const togglePasswordButton = document.getElementById('togglePassword');
 const noLink = document.getElementById('noLink');
 const installButton = document.getElementById('installButton');
@@ -142,13 +141,6 @@ function setSearchSupport(support) {
     searchSupportLink.href = '#';
     searchSupportLink.hidden = true;
   }
-}
-
-function setCopyPaymentLabel(text) {
-  copyPaymentLink.innerHTML = `
-    <span>${text}</span>
-    <svg aria-hidden="true" viewBox="0 0 24 24"><rect x="9" y="9" width="10" height="10" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v1"/></svg>
-  `;
 }
 
 function setPasswordVisible(visible) {
@@ -344,20 +336,10 @@ function renderResult(cliente) {
   if (cliente.link_pagamento) {
     paymentLink.href = cliente.link_pagamento;
     paymentLink.hidden = false;
-    copyPaymentLink.hidden = false;
-    copyPaymentLink.disabled = true;
-    copyPaymentLink.classList.add('pix-copy-disabled');
-    copyPaymentLink.title = 'Abra o pagamento para consultar o Pix.';
-    copyPaymentLink.setAttribute('aria-label', 'Copiar Pix indisponivel');
     noLink.hidden = true;
   } else {
     paymentLink.href = '#';
     paymentLink.hidden = true;
-    copyPaymentLink.hidden = true;
-    copyPaymentLink.disabled = true;
-    copyPaymentLink.classList.remove('pix-copy-disabled');
-    copyPaymentLink.removeAttribute('title');
-    copyPaymentLink.setAttribute('aria-label', 'Copiar Pix');
     noLink.hidden = false;
   }
 
@@ -503,42 +485,6 @@ document.addEventListener('click', async (event) => {
     } catch {
       setMessage('Não foi possível copiar automaticamente.');
     }
-});
-
-copyPaymentLink.addEventListener('click', async () => {
-  if (copyPaymentLink.disabled) return;
-
-  const href = paymentLink.href;
-  if (!href || href.endsWith('#')) return;
-
-  copyPaymentLink.disabled = true;
-  const originalText = copyPaymentLink.dataset.defaultLabel || 'Copiar Pix';
-  setCopyPaymentLabel('Buscando Pix...');
-
-  try {
-    const response = await fetch('/api/pix', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ link: href }),
-    });
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok || !data.pix) {
-      throw new Error(data.detail || 'Não foi possível encontrar o Pix.');
-    }
-
-    await copyText(data.pix);
-    setMessage('Código Pix copiado.', false);
-  } catch (error) {
-    try {
-      await copyText(href);
-      setMessage('Não consegui obter o Pix agora. Copiei o link de pagamento.', false);
-    } catch {
-      setMessage(error.message || `Copie o link: ${href}`);
-    }
-  } finally {
-    copyPaymentLink.disabled = false;
-    setCopyPaymentLabel(originalText);
-  }
 });
 
 form.addEventListener('submit', async (event) => {

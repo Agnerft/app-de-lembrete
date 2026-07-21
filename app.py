@@ -3,11 +3,9 @@ from pathlib import Path
 from typing import Any
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
-from urllib.parse import urlparse
 import base64
 import hashlib
 import hmac
-import html
 import json
 import logging
 import os
@@ -152,10 +150,6 @@ class NotificationSubscriptionRequest(BaseModel):
     subscription: dict[str, Any]
     access_token: str | None = None
     reminder_days: list[int] | None = None
-
-
-class PixRequest(BaseModel):
-    link: str
 
 
 class AppPreferenceRequest(BaseModel):
@@ -2077,48 +2071,6 @@ def maintenance_loop() -> None:
         time.sleep(30)
 
 
-def extract_pix_code(page_html: str) -> str | None:
-    patterns = [
-        r'id=["\']pixCodeInput["\'][^>]*\bvalue=["\']([^"\']+)["\']',
-        r'\bvalue=["\'](000201[^"\']+)["\']',
-        r'(000201[0-9A-Za-z.\-/*+:\s]{80,700})',
-    ]
-
-    for pattern in patterns:
-        match = re.search(pattern, page_html, flags=re.IGNORECASE | re.DOTALL)
-        if not match:
-            continue
-        code = html.unescape(match.group(1) if match.lastindex else match.group(0))
-        code = re.sub(r"\s+", "", code.strip())
-        if code.startswith("000201") and len(code) >= 80:
-            return code
-    return None
-
-
-def fetch_pix_code(payment_link: str) -> str:
-    parsed = urlparse(payment_link)
-    allowed_hosts = {"pagueaqui.top", "www.pagueaqui.top"}
-    if parsed.scheme != "https" or parsed.netloc.lower() not in allowed_hosts:
-        raise HTTPException(status_code=400, detail="Link de pagamento invalido para copiar Pix.")
-
-    try:
-        response = requests.get(
-            payment_link,
-            headers={"User-Agent": "MegaApp/1.0"},
-            timeout=20,
-        )
-    except requests.RequestException as exc:
-        raise HTTPException(status_code=503, detail=f"Não foi possível abrir o pagamento: {exc}") from exc
-
-    if response.status_code >= 400:
-        raise HTTPException(status_code=502, detail="A pagina de pagamento recusou a consulta.")
-
-    pix_code = extract_pix_code(response.text)
-    if not pix_code:
-        raise HTTPException(status_code=404, detail="Código Pix não encontrado no pagamento.")
-    return pix_code
-
-
 @app.get("/")
 def index() -> FileResponse:
     return FileResponse(BASE_DIR / "static" / "index.html", headers={"Cache-Control": "no-store"})
@@ -2354,11 +2306,6 @@ def sincronizar_revendas_admin(authorization: str | None = Header(default=None))
     if not names:
         raise HTTPException(status_code=503, detail="Arquivo de logins das revendas não encontrado.")
     return {"status": "sucesso", "total": len(names)}
-
-
-@app.post("/api/pix")
-def copiar_pix(request: PixRequest) -> dict[str, str]:
-    return {"pix": fetch_pix_code(clean_text(request.link))}
 
 
 @app.post("/api/plano/trocar")
